@@ -1,0 +1,6 @@
+{
+  "name": "terminal-tales",
+  "description": "Terminal Tales: an idle RPG that lives above the Claude Code prompt.",
+  "owner": { "name": "TunTran" },
+  "plugins": [{ "name": "terminal-tales", "source": "./" }]
+}

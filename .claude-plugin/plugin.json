@@ -1,0 +1,12 @@
+{
+  "name": "terminal-tales",
+  "version": "0.1.0",
+  "description": "Idle RPG above your prompt: a party of ASCII heroes earns gold and EXP from your coding activity.",
+  "author": {
+    "name": "TunTran"
+  },
+  "types": "./types/index.d.ts",
+  "license": "MIT",
+  "repository": "https://github.com/tuntran/terminal-tales",
+  "homepage": "https://github.com/tuntran/terminal-tales"
+}
