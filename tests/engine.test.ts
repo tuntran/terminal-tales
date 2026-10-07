@@ -2,8 +2,10 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { GameState, Item } from '../types'
 
-import { KILLS_PER_STAGE, MAX_INVENTORY, RECRUIT_COST } from '../src/game/catalog'
+import { ACTION_EFFECT, EFFECTS, KILLS_PER_STAGE, MAX_INVENTORY, RECRUIT_COST } from '../src/game/catalog'
 import {
+  applyAction,
+  critChance,
   equip,
   expToNext,
   heroStats,
@@ -214,6 +216,180 @@ describe('/hero actions', () => {
     expect(g.heroes.map(h => h.cls)).toEqual(['warrior', 'mage', 'ranger'])
     expect(g.gold).toBe(10_000 - RECRUIT_COST[1]! - RECRUIT_COST[2]!)
     expect(recruit(g, 'mage').error).toBeDefined()
+  })
+})
+
+/** A fight frozen for effect tests: the monster never dies and hits for a fixed amount. */
+function frozen(seed = 31): GameState {
+  const g = newGame(seed)
+  return { ...g, monster: { ...g.monster, hp: 1e9, maxHp: 1e9, atk: 10 } }
+}
+
+function party(g: GameState): GameState {
+  return recruit(recruit({ ...g, gold: 10_000 }, 'mage').state, 'ranger').state
+}
+
+describe('action effects', () => {
+  test('a prompt rallies the party for 20 steps, and a second one refreshes instead of stacking', () => {
+    let g = applyAction(newGame(1), 'prompt')
+    expect(g.effects).toEqual([{ kind: 'rally', steps: 20, charges: 0 }])
+    g = step(step(g))
+    expect(g.effects[0]!.steps).toBe(18)
+    g = applyAction(g, 'prompt')
+    expect(g.effects).toEqual([{ kind: 'rally', steps: 20, charges: 0 }])
+  })
+
+  test('trust adds its bonus to crit chance, never past 0.75', () => {
+    const g = newGame(1)
+    const hero = g.heroes[0]!
+    const trusted = applyAction(g, 'permissionAllowed')
+    expect(critChance(hero, trusted)).toBe(heroStats(hero).crit + EFFECTS.trust.power)
+    expect(critChance(hero, g)).toBe(heroStats(hero).crit)
+    const lucky = { ...hero, cls: 'ranger' as const, gear: { ...hero.gear, trinket: { id: 't', name: 'Bùa', slot: 'trinket' as const, rarity: 'legendary' as const, stage: 99, level: 9 } } }
+    expect(critChance(lucky, trusted)).toBe(Math.min(0.75, heroStats(lucky).crit + EFFECTS.trust.power))
+  })
+
+  test('a milestone blocks exactly one monster hit, then is gone', () => {
+    let g = applyAction(frozen(), 'commit')
+    const hp = g.heroes[0]!.hp
+    g = step(g)
+    expect(g.heroes[0]!.hp).toBe(hp)
+    expect(g.effects).toEqual([])
+    g = step(g)
+    expect(g.heroes[0]!.hp).toBeLessThan(hp)
+  })
+
+  test('stoneskin blocks two whole volleys of a party of three, and the third lands', () => {
+    let g = applyAction(party(frozen()), 'permissionDenied')
+    expect(g.heroes).toHaveLength(3)
+    const hp = g.monster.hp
+    g = step(step(g))
+    expect(g.monster.hp).toBe(hp)
+    expect(g.effects).toEqual([])
+    g = step(g)
+    expect(g.monster.hp).toBeLessThan(hp)
+  })
+
+  test('the free strike of a tool call neither meets nor spends any effect', () => {
+    let g = applyAction(frozen(), 'permissionDenied')
+    const hp = g.monster.hp
+    g = rewardToolCall(rewardToolCall(g))
+    expect(g.monster.hp).toBeLessThan(hp)
+    expect(g.effects).toEqual([{ kind: 'stoneskin', steps: 0, charges: 2 }])
+    g = step(g)
+    expect(g.effects).toEqual([{ kind: 'stoneskin', steps: 0, charges: 1 }])
+  })
+
+  test('enrage makes the monster hit for 1.25 times its attack', () => {
+    const g = applyAction(frozen(), 'turnAborted')
+    const hero = g.heroes[0]!
+    const after = step(g)
+    const regen = Math.ceil(heroStats(hero).maxHp * 0.03)
+    expect(after.heroes[0]!.hp).toBe(hero.hp - Math.round(10 * 1.25) + regen)
+  })
+
+  test('second wind heals 15% and calm heals fully, only heroes still standing', () => {
+    let g = party(frozen())
+    const max = g.heroes.map(h => heroStats(h).maxHp)
+    g = { ...g, heroes: g.heroes.map((h, i) => ({ ...h, hp: i === 0 ? 0 : 10 })) }
+    const wind = applyAction(g, 'turnDone')
+    expect(wind.heroes.map(h => h.hp)).toEqual([0, 10 + Math.round(max[1]! * 0.15), 10 + Math.round(max[2]! * 0.15)])
+    const calm = applyAction(g, 'compact')
+    expect(calm.heroes.map(h => h.hp)).toEqual([0, max[1], max[2]])
+    expect(calm.effects).toEqual([])
+  })
+
+  test('regen heals the monster by 20% of its max HP, never past it', () => {
+    const g = newGame(1)
+    const hurt = { ...g, monster: { ...g.monster, maxHp: 100, hp: 50 } }
+    expect(applyAction(hurt, 'bashFailed').monster.hp).toBe(70)
+    const almost = { ...g, monster: { ...g.monster, maxHp: 100, hp: 95 } }
+    expect(applyAction(almost, 'bashFailed').monster.hp).toBe(100)
+  })
+
+  test('durations tick once on a resting step, a killing step and a plain step', () => {
+    const start = applyAction(frozen(), 'prompt')
+    const resting = step({ ...start, resting: 3 })
+    expect(resting.effects[0]!.steps).toBe(19)
+    const killing = step({ ...start, monster: { ...start.monster, hp: 1 } })
+    expect(killing.stats.kills).toBe(1)
+    expect(killing.effects[0]!.steps).toBe(19)
+    const plain = step(start)
+    expect(plain.effects[0]!.steps).toBe(19)
+    let g = start
+    for (let i = 0; i < 20; i += 1) g = step(g)
+    expect(g.effects).toEqual([])
+  })
+
+  test('effects on the monster side outlive the monster they started on', () => {
+    let g = applyAction(newGame(1), 'turnAborted')
+    g = step({ ...g, monster: { ...g.monster, hp: 1 } })
+    expect(g.stats.kills).toBe(1)
+    expect(g.effects.map(e => e.kind)).toEqual(['enrage'])
+  })
+
+  test('every action writes one log line', () => {
+    for (const action of Object.keys(ACTION_EFFECT) as (keyof typeof ACTION_EFFECT)[]) {
+      const g = newGame(1)
+      const after = applyAction(g, action)
+      expect(after.log).toHaveLength(g.log.length + 1)
+      expect(after.log.at(-1)).toBe(EFFECTS[ACTION_EFFECT[action]].line)
+    }
+  })
+
+  test('no action takes gold, items or levels', () => {
+    let g = withItem(party(frozen()))
+    for (const action of Object.keys(ACTION_EFFECT) as (keyof typeof ACTION_EFFECT)[]) {
+      const after = applyAction(g, action)
+      expect(after.gold).toBe(g.gold)
+      expect(after.inventory).toEqual(g.inventory)
+      expect(after.heroes.map(h => h.level)).toEqual(g.heroes.map(h => h.level))
+      g = after
+    }
+  })
+
+  test('the same seed and actions replay the same game', () => {
+    const play = () => {
+      let g = party(newGame(7))
+      for (let i = 0; i < 200; i += 1) {
+        if (i % 25 === 0) g = applyAction(g, 'prompt')
+        if (i % 40 === 0) g = applyAction(g, 'permissionDenied')
+        if (i % 30 === 0) g = applyAction(g, 'turnAborted')
+        g = step(g)
+      }
+      return g
+    }
+    expect(play()).toEqual(play())
+  })
+
+  test('a fight without effects draws the same randomness as before effects existed', () => {
+    let g = newGame(7)
+    for (let i = 0; i < 300; i += 1) g = i % 3 === 0 ? rewardToolCall(step(g)) : step(g)
+    expect({ seed: g.seed, gold: g.gold, kills: g.stats.kills, stage: g.stage, exp: g.heroes[0]!.exp }).toEqual({
+      seed: 1285485541,
+      gold: 1606,
+      kills: 76,
+      stage: 7,
+      exp: 505,
+    })
+  })
+
+  test('an old save without effects loads with none, and bad effects are dropped', () => {
+    const { effects: _, ...old } = newGame(1)
+    expect(parseSave(old)?.effects).toEqual([])
+    const mixed = {
+      ...newGame(1),
+      effects: [
+        { kind: 'rally', steps: 5, charges: 0 },
+        { kind: 'nuke', steps: 5, charges: 0 },
+        { kind: '__proto__', steps: 5, charges: 0 },
+        { kind: 'trust', steps: -1, charges: 0 },
+        { kind: 'enrage', steps: 'x', charges: 0 },
+        null,
+      ],
+    }
+    expect(parseSave(mixed)?.effects).toEqual([{ kind: 'rally', steps: 5, charges: 0 }])
+    expect(parseSave({ ...newGame(1), effects: 'nope' })?.effects).toEqual([])
   })
 })
 

@@ -43,6 +43,30 @@ export type GameStats = {
   itemsFound: number
 }
 
+/** Something the user did that buffs one side of the fight. */
+export type GameAction =
+  | 'prompt'
+  | 'turnDone'
+  | 'permissionAllowed'
+  | 'commit'
+  | 'compact'
+  | 'turnAborted'
+  | 'permissionDenied'
+  | 'bashFailed'
+
+export type EffectKind =
+  | 'rally'
+  | 'secondWind'
+  | 'trust'
+  | 'milestone'
+  | 'calm'
+  | 'enrage'
+  | 'stoneskin'
+  | 'regen'
+
+/** A lasting effect: `steps` counts down each combat step, `charges` each blocked volley or hit. */
+export type Effect = { kind: EffectKind; steps: number; charges: number }
+
 export type PendingRewards = { toolCalls: number; testPasses: number }
 
 export type GameState = {
@@ -62,6 +86,8 @@ export type GameState = {
   frame: number
   log: string[]
   stats: GameStats
+  /** Lasting buffs from the user's actions; one of each kind at most. */
+  effects: Effect[]
 }
 
 declare module 'claude-code' {

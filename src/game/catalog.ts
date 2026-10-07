@@ -1,4 +1,4 @@
-import type { HeroClass, MonsterTier, Rarity, Slot } from '../../types'
+import type { EffectKind, GameAction, HeroClass, MonsterTier, Rarity, Slot } from '../../types'
 
 export type ClassInfo = {
   label: string
@@ -124,3 +124,38 @@ export const MAX_INVENTORY = 24
 export const REST_STEPS = 4
 export const LOG_SIZE = 6
 export const RECRUIT_COST: readonly number[] = [0, 150, 900]
+
+export type EffectInfo = {
+  side: 'heroes' | 'monster'
+  label: string
+  icon: string
+  /** Combat steps it lasts; 0 for an instant effect or a shield. */
+  steps: number
+  /** Volleys or hits a shield blocks; 0 for anything else. */
+  charges: number
+  /** Chance, bonus or share of max HP, depending on the kind. */
+  power: number
+  line: string
+}
+
+export const EFFECTS: Record<EffectKind, EffectInfo> = {
+  rally: { side: 'heroes', label: 'Hô khiến', icon: '>>', steps: 20, charges: 0, power: 0.2, line: 'Hô khiến! Cả đội hăng hái.' },
+  secondWind: { side: 'heroes', label: 'Tiếp sức', icon: '+', steps: 0, charges: 0, power: 0.15, line: 'Tiếp sức! Cả đội hồi máu.' },
+  trust: { side: 'heroes', label: 'Tin tưởng', icon: '*', steps: 20, charges: 0, power: 0.1, line: 'Tin tưởng! Đòn chí mạng sắc hơn.' },
+  milestone: { side: 'heroes', label: 'Cột mốc', icon: '[]', steps: 0, charges: 1, power: 0, line: 'Cột mốc! Khiên chặn đòn kế tiếp của quái.' },
+  calm: { side: 'heroes', label: 'Tĩnh tâm', icon: '~', steps: 0, charges: 0, power: 1, line: 'Tĩnh tâm! Cả đội hồi đầy máu.' },
+  enrage: { side: 'monster', label: 'Nổi giận', icon: '!!', steps: 20, charges: 0, power: 0.25, line: 'Quái nổi giận!' },
+  stoneskin: { side: 'monster', label: 'Giáp đá', icon: '##', steps: 0, charges: 2, power: 0, line: 'Quái khoác giáp đá!' },
+  regen: { side: 'monster', label: 'Tái sinh', icon: '^', steps: 0, charges: 0, power: 0.2, line: 'Quái tái sinh!' },
+}
+
+export const ACTION_EFFECT: Record<GameAction, EffectKind> = {
+  prompt: 'rally',
+  turnDone: 'secondWind',
+  permissionAllowed: 'trust',
+  commit: 'milestone',
+  compact: 'calm',
+  turnAborted: 'enrage',
+  permissionDenied: 'stoneskin',
+  bashFailed: 'regen',
+}
