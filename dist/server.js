@@ -576,6 +576,29 @@ function parseAction(raw) {
       return null;
   }
 }
+function applyHero(g, hero) {
+  switch (hero.op) {
+    case "equip":
+      return equip(g, hero.heroId, hero.itemId);
+    case "unequip":
+      return unequip(g, hero.heroId, hero.slot);
+    case "upgrade":
+      return upgrade(g, hero.heroId, hero.slot);
+    case "sell":
+      return sell(g, hero.itemId);
+    case "recruit":
+      return recruit(g, hero.cls);
+  }
+}
+function applyDaemonAction(g, action) {
+  if (action.kind === "hero")
+    return applyHero(g, action);
+  if (action.kind === "toolCall")
+    return { state: rewardToolCall(g) };
+  if (action.kind === "testPass")
+    return { state: rewardTestPass(g) };
+  return { state: applyAction(g, action.kind) };
+}
 function compareVersions(a, b) {
   const parts = (v) => v.split(".").map((n) => Number.parseInt(n, 10) || 0);
   const pa = parts(a);
@@ -682,29 +705,6 @@ function loadWorld(file, log) {
   renameSync(file, kept);
   log(`world.json unreadable: kept as ${kept}`);
   return { state: "empty", game: null };
-}
-function applyHero(g, hero) {
-  switch (hero.op) {
-    case "equip":
-      return equip(g, hero.heroId, hero.itemId);
-    case "unequip":
-      return unequip(g, hero.heroId, hero.slot);
-    case "upgrade":
-      return upgrade(g, hero.heroId, hero.slot);
-    case "sell":
-      return sell(g, hero.itemId);
-    case "recruit":
-      return recruit(g, hero.cls);
-  }
-}
-function applyTo(g, action) {
-  if (action.kind === "hero")
-    return applyHero(g, action);
-  if (action.kind === "toolCall")
-    return { state: rewardToolCall(g) };
-  if (action.kind === "testPass")
-    return { state: rewardTestPass(g) };
-  return { state: applyAction(g, action.kind) };
 }
 
 class BodyTooLarge extends Error {
@@ -827,7 +827,7 @@ async function startDaemon(options) {
           return send(res, 200, { ok: false, error: "locked" });
         if (state === "empty" || game === null)
           return send(res, 200, { ok: false, error: "not-ready" });
-        const result = applyTo(game, action);
+        const result = applyDaemonAction(game, action);
         if (result.error !== undefined)
           return send(res, 200, { ok: false, error: result.error });
         changed(result.state);

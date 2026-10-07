@@ -67,8 +67,6 @@ export type EffectKind =
 /** A lasting effect: `steps` counts down each combat step, `charges` each blocked volley or hit. */
 export type Effect = { kind: EffectKind; steps: number; charges: number }
 
-export type PendingRewards = { toolCalls: number; testPasses: number }
-
 export type GameState = {
   version: 1
   seed: number
@@ -90,17 +88,20 @@ export type GameState = {
   effects: Effect[]
 }
 
+export type SyncMode = 'starting' | 'daemon' | 'solo' | 'locked'
+
 declare module 'claude-code' {
   interface PluginState {
     'terminal-tales': {
       game: GameState | null
       selectedHero: number
-      /** The store revision this session's game builds on. */
-      baseRev: number
-      /** Activity rewards earned since the last save, replayed onto another session's newer save. */
-      pending: PendingRewards
-      /** True when the store holds a save from a newer version: this session never writes it. */
-      isSaveLocked: boolean
+      /**
+       * Where the game runs: `starting` until the daemon answers or is given up
+       * on, `daemon` while the shared fight shows, `solo` when this session
+       * runs its own and saves it in `$.store`, `locked` when the save comes
+       * from a newer version and this session plays a game it never writes.
+       */
+      syncMode: SyncMode
     }
   }
 }

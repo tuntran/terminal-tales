@@ -10,21 +10,7 @@ import { dirname, join } from 'node:path'
 
 import type { GameState } from '../types'
 
-import {
-  applyAction,
-  equip,
-  isNewerSave,
-  newGame,
-  parseSave,
-  recruit,
-  rewardTestPass,
-  rewardToolCall,
-  sell,
-  step,
-  unequip,
-  upgrade,
-  type ActionResult,
-} from '../src/game/engine'
+import { isNewerSave, newGame, parseSave, step } from '../src/game/engine'
 import { checkDataDir, dataFiles } from './data-dir'
 import {
   DAEMON_MARK,
@@ -33,9 +19,8 @@ import {
   compareVersions,
   parseAction,
   type ActionReply,
-  type DaemonAction,
+  applyDaemonAction,
   type Hello,
-  type HeroOp,
   type SeedReply,
   type ShutdownReply,
   type WorldReply,
@@ -162,28 +147,6 @@ function loadWorld(file: string, log: (line: string) => void): Loaded {
   return { state: 'empty', game: null }
 }
 
-function applyHero(g: GameState, hero: HeroOp): ActionResult {
-  switch (hero.op) {
-    case 'equip':
-      return equip(g, hero.heroId, hero.itemId)
-    case 'unequip':
-      return unequip(g, hero.heroId, hero.slot)
-    case 'upgrade':
-      return upgrade(g, hero.heroId, hero.slot)
-    case 'sell':
-      return sell(g, hero.itemId)
-    case 'recruit':
-      return recruit(g, hero.cls)
-  }
-}
-
-function applyTo(g: GameState, action: DaemonAction): ActionResult {
-  if (action.kind === 'hero') return applyHero(g, action)
-  if (action.kind === 'toolCall') return { state: rewardToolCall(g) }
-  if (action.kind === 'testPass') return { state: rewardTestPass(g) }
-  return { state: applyAction(g, action.kind) }
-}
-
 class BodyTooLarge extends Error {}
 
 function readBody(req: IncomingMessage): Promise<unknown> {
@@ -308,7 +271,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon | null
         if (action === null) return send(res, 400, { ok: false, error: 'bad-action' } satisfies ActionReply)
         if (state === 'locked') return send(res, 200, { ok: false, error: 'locked' } satisfies ActionReply)
         if (state === 'empty' || game === null) return send(res, 200, { ok: false, error: 'not-ready' } satisfies ActionReply)
-        const result = applyTo(game, action)
+        const result = applyDaemonAction(game, action)
         if (result.error !== undefined) return send(res, 200, { ok: false, error: result.error } satisfies ActionReply)
         changed(result.state)
         return send(res, 200, { ok: true, seq } satisfies ActionReply)

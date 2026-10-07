@@ -1,9 +1,21 @@
-// The daemon's wire protocol, shared by the server and the plugin's client.
-// It imports no `node:*` module, so the plugin can load it too.
+// The daemon's wire protocol and the one way an action changes a game, shared
+// by the server and the plugin's client. It imports no `node:*` module, so
+// the plugin can load it too.
 
 import type { GameAction, GameState, HeroClass, Slot } from '../types'
 
 import { ACTION_EFFECT, CLASSES, SLOT_ORDER } from '../src/game/catalog'
+import {
+  applyAction,
+  equip,
+  recruit,
+  rewardTestPass,
+  rewardToolCall,
+  sell,
+  unequip,
+  upgrade,
+  type ActionResult,
+} from '../src/game/engine'
 
 /** The argument that marks the daemon's process, so `pgrep -f` finds it. */
 export const DAEMON_MARK = 'terminal-tales-daemon'
@@ -91,6 +103,29 @@ export function parseAction(raw: unknown): DaemonAction | null {
     default:
       return null
   }
+}
+
+function applyHero(g: GameState, hero: HeroOp): ActionResult {
+  switch (hero.op) {
+    case 'equip':
+      return equip(g, hero.heroId, hero.itemId)
+    case 'unequip':
+      return unequip(g, hero.heroId, hero.slot)
+    case 'upgrade':
+      return upgrade(g, hero.heroId, hero.slot)
+    case 'sell':
+      return sell(g, hero.itemId)
+    case 'recruit':
+      return recruit(g, hero.cls)
+  }
+}
+
+/** Applies one action to a game, the daemon's and a solo session's alike. */
+export function applyDaemonAction(g: GameState, action: DaemonAction): ActionResult {
+  if (action.kind === 'hero') return applyHero(g, action)
+  if (action.kind === 'toolCall') return { state: rewardToolCall(g) }
+  if (action.kind === 'testPass') return { state: rewardTestPass(g) }
+  return { state: applyAction(g, action.kind) }
 }
 
 /** Compares two `x.y.z` versions: negative when `a` is older, 0 when equal. */
