@@ -37,7 +37,12 @@ export type HeroOp =
   | { op: 'sell'; itemId: string }
   | { op: 'recruit'; cls: HeroClass }
 
-export type DaemonAction = { kind: GameAction | 'toolCall' | 'testPass' } | ({ kind: 'hero' } & HeroOp)
+/**
+ * One action. `id`, when the client sets one, makes a resend harmless: the
+ * daemon applies each id once, so a send that timed out after it landed
+ * does not pay twice.
+ */
+export type DaemonAction = ({ kind: GameAction | 'toolCall' | 'testPass' } | ({ kind: 'hero' } & HeroOp)) & { id?: string }
 
 export type Hello = { build: string; version: string; pid: number; epoch: string; state: WorldState }
 
@@ -74,11 +79,17 @@ function isClass(value: unknown): value is HeroClass {
 export function parseAction(raw: unknown): DaemonAction | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
   const body = raw as Record<string, unknown>
-  const kind = Object.hasOwn(body, 'kind') ? body.kind : undefined
-  if (typeof kind !== 'string') return null
+  const field = (name: string): unknown => (Object.hasOwn(body, name) ? body[name] : undefined)
+  const kind = field('kind')
+  const id = field('id')
+  if (typeof kind !== 'string' || (id !== undefined && !isId(id))) return null
+  const action = parseKind(kind, field)
+  return action === null || id === undefined ? action : { ...action, id }
+}
+
+function parseKind(kind: string, field: (name: string) => unknown): DaemonAction | null {
   if (PLAIN_KINDS.has(kind)) return { kind: kind as GameAction | 'toolCall' | 'testPass' }
   if (kind !== 'hero') return null
-  const field = (name: string): unknown => (Object.hasOwn(body, name) ? body[name] : undefined)
   const op = field('op')
   switch (op) {
     case 'equip': {

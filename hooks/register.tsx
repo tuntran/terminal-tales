@@ -39,6 +39,7 @@ let bandSite: { requestId: string; columns: number; rows: number } | null = null
 // A classic PermissionRequest no hook beneath answered means the dialog
 // showed, which moves the call to `dialogCalls`; its tool.call result then
 // tells the user's answer.
+const MAX_TRACKED_CALLS = 200
 const askedCalls = new Map<string, string>()
 const dialogCalls = new Set<string>()
 
@@ -55,6 +56,7 @@ function host($: EngineInterface): Host {
     readFile: path => $.fs.read(path),
     exists: path => $.fs.exists(path),
     home: () => $.env.get('HOME'),
+    path: () => $.env.get('PATH'),
     storeGet: key => $.store.get(key),
     storeSet: (key, value) => $.store.set(key, value),
     now: () => $.clock.now(),
@@ -151,7 +153,11 @@ export const register: Register = on => {
 
   on('tool.check', async ($, e, next) => {
     const verdict = await next(e)
-    if (verdict.decision === 'ask' && e.tool_use_id !== undefined) askedCalls.set(e.tool_use_id, callKey(e.tool, e.input))
+    if (verdict.decision === 'ask' && e.tool_use_id !== undefined) {
+      askedCalls.set(e.tool_use_id, callKey(e.tool, e.input))
+      // A call that never reached tool.call (its loop ended) is dropped in time.
+      if (askedCalls.size > MAX_TRACKED_CALLS) askedCalls.delete(askedCalls.keys().next().value as string)
+    }
     return verdict
   }).catch(($, e, next) => next(e))
 
@@ -163,6 +169,7 @@ export const register: Register = on => {
         if (asked !== key) continue
         askedCalls.delete(id)
         dialogCalls.add(id)
+        if (dialogCalls.size > MAX_TRACKED_CALLS) dialogCalls.delete(dialogCalls.values().next().value as string)
         break
       }
     }

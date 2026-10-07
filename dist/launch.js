@@ -544,14 +544,19 @@ function parseAction(raw) {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
     return null;
   const body = raw;
-  const kind = Object.hasOwn(body, "kind") ? body.kind : undefined;
-  if (typeof kind !== "string")
+  const field = (name) => Object.hasOwn(body, name) ? body[name] : undefined;
+  const kind = field("kind");
+  const id = field("id");
+  if (typeof kind !== "string" || id !== undefined && !isId(id))
     return null;
+  const action = parseKind(kind, field);
+  return action === null || id === undefined ? action : { ...action, id };
+}
+function parseKind(kind, field) {
   if (PLAIN_KINDS.has(kind))
     return { kind };
   if (kind !== "hero")
     return null;
-  const field = (name) => Object.hasOwn(body, name) ? body[name] : undefined;
   const op = field("op");
   switch (op) {
     case "equip": {

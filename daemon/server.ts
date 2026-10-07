@@ -4,7 +4,7 @@
 // could not read or one a newer version wrote, and exits once no session has
 // talked to it for a while.
 
-import { chmodSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { createServer, request, type IncomingMessage, type ServerResponse } from 'node:http'
 import { dirname, join } from 'node:path'
 
@@ -47,8 +47,16 @@ export type Daemon = {
   stop: (reason: string) => Promise<void>
 }
 
-/** A lock younger than this, with no daemon answering, is a daemon still starting. */
+/** A lock younger than this, with nothing listening on the socket, is a daemon still starting. */
 const STARTING_GRACE_MS = 2000
+/** A lock its owner has not touched for this long, with no answer on the socket, is stale. */
+const LOCK_STALE_MS = 10_000
+/** How often a running daemon touches its lock and checks it still owns it. */
+const HEARTBEAT_MS = 2000
+const PROBE_TIMEOUT_MS = 2000
+const MAX_APPLIED_IDS = 2000
+/** A break marker older than this was left by a breaker that died. */
+const BREAK_STALE_MS = 5000
 /** Longest a starting daemon tries to take the lock before giving up. */
 const LOCK_DEADLINE_MS = 8000
 
@@ -58,24 +66,63 @@ function isErrno(err: unknown, code: string): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: unknown }).code === code
 }
 
-/** True when a daemon answers `/hello` on the socket within a second. */
-export function answers(socketPath: string): Promise<boolean> {
+type Probe = 'alive' | 'dead' | 'silent'
+
+/**
+ * Asks the socket for `/hello`: `alive` when a daemon answers, `dead` when
+ * nothing listens there (no socket, or the connection is refused), `silent`
+ * when something took the connection but did not answer in time.
+ */
+export function probe(socketPath: string): Promise<Probe> {
   return new Promise(resolve => {
-    const req = request({ socketPath, path: '/hello', method: 'GET', timeout: 1000 }, res => {
+    const req = request({ socketPath, path: '/hello', method: 'GET', timeout: PROBE_TIMEOUT_MS }, res => {
       res.resume()
-      resolve(res.statusCode === 200)
+      resolve(res.statusCode === 200 ? 'alive' : 'silent')
     })
-    req.on('timeout', () => req.destroy())
-    req.on('error', () => resolve(false))
+    req.on('timeout', () => {
+      resolve('silent')
+      req.destroy()
+    })
+    req.on('error', err => resolve(isErrno(err, 'ENOENT') || isErrno(err, 'ECONNREFUSED') ? 'dead' : 'silent'))
     req.end()
   })
 }
 
 /**
+ * Removes a lock judged stale, but only while holding `daemon.lock.break`:
+ * one breaker at a time, so no contender removes a lock another one has
+ * just written in its place. A breaker that died mid-break leaves its file,
+ * which is cleared once it is clearly old.
+ */
+function breakStale(lock: string, judgedIno: number): void {
+  const breaker = `${lock}.break`
+  try {
+    writeFileSync(breaker, String(process.pid), { flag: 'wx', mode: 0o600 })
+  } catch (err) {
+    if (!isErrno(err, 'EEXIST')) throw err
+    try {
+      if (Date.now() - statSync(breaker).mtimeMs > BREAK_STALE_MS) rmSync(breaker, { force: true })
+    } catch {
+      // Gone already.
+    }
+    return
+  }
+  try {
+    if (statSync(lock).ino === judgedIno) rmSync(lock, { force: true })
+  } catch {
+    // Gone already.
+  } finally {
+    rmSync(breaker, { force: true })
+  }
+}
+
+/**
  * Takes `daemon.lock`, or returns false when a live daemon already holds it.
+ *
  * Alive means its socket answers, never that the pid in the lock exists: a
- * pid is reused. A stale lock is taken over by renaming it, which exactly one
- * contender wins; a fresh one is left to the daemon that is still starting.
+ * pid is reused. A lock is stale once nothing listens on the socket and the
+ * lock is past the time a starting daemon needs to listen, or once its owner
+ * has stopped refreshing it (a live daemon touches it every heartbeat).
  */
 async function takeLock(lock: string, socket: string, epoch: string): Promise<boolean> {
   const deadline = Date.now() + LOCK_DEADLINE_MS
@@ -86,26 +133,16 @@ async function takeLock(lock: string, socket: string, epoch: string): Promise<bo
     } catch (err) {
       if (!isErrno(err, 'EEXIST')) throw err
     }
-    if (await answers(socket)) return false
-    let age: number
+    const seen = await probe(socket)
+    if (seen === 'alive') return false
+    let judged: { ino: number; mtimeMs: number }
     try {
-      age = Date.now() - statSync(lock).mtimeMs
+      judged = statSync(lock)
     } catch {
       continue
     }
-    if (age < STARTING_GRACE_MS) {
-      await sleep(100)
-      continue
-    }
-    const stale = `${lock}.stale-${process.pid}`
-    try {
-      renameSync(lock, stale)
-    } catch (err) {
-      if (!isErrno(err, 'ENOENT')) throw err
-      await sleep(50)
-      continue
-    }
-    rmSync(stale, { force: true })
+    if (Date.now() - judged.mtimeMs >= (seen === 'dead' ? STARTING_GRACE_MS : LOCK_STALE_MS)) breakStale(lock, judged.ino)
+    await sleep(50 + Math.random() * 50)
   }
   return false
 }
@@ -208,13 +245,16 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon | null
   let isStopping = false
   // Requests still open, long-polls included: while any session polls, one is.
   let openRequests = 0
+  // Ids of recent actions, oldest first, so a resend is applied once.
+  const applied = new Set<string>()
   const waiters = new Set<{ since: number; epoch: string; res: ServerResponse; timer: ReturnType<typeof setTimeout> }>()
 
   const world = (): WorldReply => ({ epoch, seq, state, game })
 
+  /** Writes the world, only while this daemon still holds the lock. */
   function save(): void {
-    if (state !== 'loaded' || game === null || !isDirty) return
-    const tmp = `${files.world}.tmp`
+    if (state !== 'loaded' || game === null || !isDirty || !ownsLock(files.lock, epoch)) return
+    const tmp = `${files.world}.${process.pid}.tmp`
     writeFileSync(tmp, JSON.stringify(game), { mode: 0o600 })
     renameSync(tmp, files.world)
     isDirty = false
@@ -271,6 +311,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon | null
         if (action === null) return send(res, 400, { ok: false, error: 'bad-action' } satisfies ActionReply)
         if (state === 'locked') return send(res, 200, { ok: false, error: 'locked' } satisfies ActionReply)
         if (state === 'empty' || game === null) return send(res, 200, { ok: false, error: 'not-ready' } satisfies ActionReply)
+        if (action.id !== undefined) {
+          if (applied.has(action.id)) return send(res, 200, { ok: true, seq } satisfies ActionReply)
+          applied.add(action.id)
+          if (applied.size > MAX_APPLIED_IDS) applied.delete(applied.values().next().value as string)
+        }
         const result = applyDaemonAction(game, action)
         if (result.error !== undefined) return send(res, 200, { ok: false, error: result.error } satisfies ActionReply)
         changed(result.state)
@@ -279,9 +324,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon | null
       case 'POST /shutdown': {
         const theirBuild = url.searchParams.get('build') ?? ''
         const theirVersion = url.searchParams.get('version') ?? ''
+        // Only a strictly newer version takes over: two builds of one version
+        // would otherwise shut each other down in turn.
         if (theirBuild === build) return send(res, 200, { ok: false, reason: 'same-build' } satisfies ShutdownReply)
-        if (compareVersions(theirVersion, version) < 0) {
-          return send(res, 200, { ok: false, reason: 'older-version' } satisfies ShutdownReply)
+        if (compareVersions(theirVersion, version) <= 0) {
+          return send(res, 200, { ok: false, reason: 'not-newer' } satisfies ShutdownReply)
         }
         send(res, 200, { ok: true } satisfies ShutdownReply)
         void stop(`shutdown for build ${theirBuild} ${theirVersion}`)
@@ -310,6 +357,11 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon | null
     })
   })
 
+  // The lock is ours: whatever socket file is left belongs to a daemon that died.
+  if (!ownsLock(files.lock, epoch)) {
+    log('lost the lock before listening: exiting')
+    return null
+  }
   rmSync(files.socket, { force: true })
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
@@ -319,6 +371,7 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon | null
     })
   })
   chmodSync(files.socket, 0o600)
+  const boundIno = statSync(files.socket).ino
 
   const timers = [
     setInterval(() => {
@@ -334,15 +387,28 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon | null
     setInterval(() => {
       if (openRequests === 0 && Date.now() - lastActivity >= idleMs) void stop('idle')
     }, Math.min(1000, idleMs)),
+    setInterval(() => {
+      if (!ownsLock(files.lock, epoch)) return void stop('lost the lock', false)
+      try {
+        const now = new Date()
+        utimesSync(files.lock, now, now)
+      } catch {
+        // Gone between the check and the touch: the next beat stops.
+      }
+    }, HEARTBEAT_MS),
   ]
 
-  /** Saves, stops serving, then removes the socket and the lock, in that order. */
-  async function stop(reason: string): Promise<void> {
+  /**
+   * Saves, stops serving, then removes the socket and the lock, in that order.
+   * A daemon that lost its lock saves nothing and removes neither: both
+   * belong to the daemon that holds the lock now.
+   */
+  async function stop(reason: string, isOwner = true): Promise<void> {
     if (isStopping) return
     isStopping = true
     for (const timer of timers) clearInterval(timer)
     try {
-      save()
+      if (isOwner) save()
     } catch (err) {
       log(`final save failed: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -355,8 +421,14 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon | null
       server.close(() => resolve())
       server.closeAllConnections()
     })
-    rmSync(files.socket, { force: true })
-    if (ownsLock(files.lock, epoch)) rmSync(files.lock, { force: true })
+    if (isOwner && ownsLock(files.lock, epoch)) {
+      try {
+        if (statSync(files.socket).ino === boundIno) rmSync(files.socket, { force: true })
+      } catch {
+        // Already gone.
+      }
+      rmSync(files.lock, { force: true })
+    }
     log(`stopped: ${reason}`)
     onExit(0)
   }

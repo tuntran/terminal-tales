@@ -50,6 +50,7 @@ type World = {
   /** The game the plugin shows once what it set going has settled. */
   shown: () => Promise<GameState>
   mode: () => unknown
+  options: WorldOptions
 }
 
 type WorldOptions = {
@@ -64,7 +65,7 @@ type WorldOptions = {
 /** The engine beneath the plugin: the nouns it calls, answered from memory. */
 function world(on: On, options: WorldOptions = {}): World {
   const clock = mock.clock(on, { now: 1_000 })
-  mock.env(on, { HOME })
+  mock.env(on, { HOME, PATH: '/usr/bin:/bin' })
   const store = new Map<string, unknown>(options.save === undefined ? [] : [[SAVE_KEY, options.save]])
   let latest: GameState | null = null
   let latestMode: unknown = undefined
@@ -127,6 +128,7 @@ function world(on: On, options: WorldOptions = {}): World {
       return w.game()
     },
     mode: () => latestMode,
+    options,
   }
   on('store.get', (_$, e) => ({ value: structuredClone(store.get(e.key)) }) as never)
   on('store.set', (_$, e) => {
@@ -170,7 +172,7 @@ function world(on: On, options: WorldOptions = {}): World {
     if (cmd === 'which') {
       return options.hasRuntime === false ? ({ value: { exitCode: 1, stdout: '', stderr: '' } } as never) : ok(`/usr/bin/${arg}\n`)
     }
-    if (arg?.endsWith('/dist/launch.js')) {
+    if (e.argv.some(part => part.endsWith('/dist/launch.js'))) {
       if (!daemon.isRunning) daemon.restart(daemon.game)
       return ok('{"launched":4242}\n')
     }
@@ -253,11 +255,20 @@ describe('daemon', () => {
     const w = world(on)
     await start($, w)
     expect(w.commands).toContain('hero')
-    const launch = w.runs.find(r => r.argv[1]?.endsWith('/dist/launch.js'))
-    expect(launch?.argv[0]).toBe('/usr/bin/node')
-    const dataDir = launch?.argv[3] ?? ''
+    const launch = w.runs.find(r => r.argv.some(part => part.endsWith('/dist/launch.js')))
+    const dataDir = launch?.argv.at(-1) ?? ''
     expect(dataDir).toMatch(new RegExp(`^${HOME}/\\.claude/tt/[0-9a-f]{8}$`))
-    expect(launch?.argv).toEqual(['/usr/bin/node', expect.stringContaining('/dist/launch.js'), '--detach', dataDir])
+    // An empty environment but PATH and HOME, so nothing from the session loads into the launcher.
+    expect(launch?.argv).toEqual([
+      '/usr/bin/env',
+      '-i',
+      'PATH=/usr/bin:/bin',
+      `HOME=${HOME}`,
+      '/usr/bin/node',
+      expect.stringContaining('/dist/launch.js'),
+      '--detach',
+      dataDir,
+    ])
     // Never the session's directory: bun would run its bunfig preload.
     expect(w.runs.every(r => r.cwd === dataDir || r.cwd === '/')).toBe(true)
     expect(w.daemon.seeds).toEqual([null])
@@ -271,7 +282,7 @@ describe('daemon', () => {
     const running = { ...newGame(5), gold: 4321 }
     const w = world(on, { running })
     await start($, w)
-    expect(w.runs.some(r => r.argv[1]?.endsWith('/dist/launch.js'))).toBe(false)
+    expect(w.runs.some(r => r.argv.some(part => part.endsWith('/dist/launch.js')))).toBe(false)
     expect(w.daemon.seeds).toEqual([])
     expect(w.game().gold).toBe(4321)
   })
@@ -284,11 +295,15 @@ describe('daemon', () => {
     expect(w.game().gold).toBe(4321)
     expect(w.store.get(MIGRATED_KEY)).toBe(true)
     expect(w.store.get(SAVE_KEY)).toEqual(save)
-    // The daemon comes back empty: the save it already took is not sent again.
+    // The daemon comes back empty: the save it already took is not sent again,
+    // the world this session showed since is.
+    w.daemon.change(g => ({ ...g, gold: 5555 }))
+    await w.clock.settle()
     w.daemon.isRunning = false
     w.daemon.restart(null)
     await w.clock.advance(1000)
-    expect(w.daemon.seeds).toEqual([save, null])
+    expect(w.daemon.seeds).toHaveLength(2)
+    expect((w.daemon.seeds[1] as GameState).gold).toBe(5555)
   })
 
   test('the world follows the daemon, and a restarted one counts again from zero', async ($, on) => {
@@ -318,9 +333,47 @@ describe('daemon', () => {
     w.daemon.isRunning = false
     w.daemon.change(g => g)
     await w.clock.advance(1000)
-    expect(w.runs.filter(r => r.argv[1]?.endsWith('/dist/launch.js'))).toHaveLength(2)
+    expect(w.runs.filter(r => r.argv.some(part => part.endsWith('/dist/launch.js')))).toHaveLength(2)
     expect(w.daemon.isRunning).toBe(true)
     expect(w.game().gold).toBe(gold)
+  })
+
+  test('a daemon that comes back empty is seeded with the world this session showed', async ($, on) => {
+    const w = world(on, { save: newGame(1), running: { ...newGame(5), gold: 999 } })
+    await start($, w)
+    w.daemon.isRunning = false
+    w.daemon.restart(null)
+    await w.clock.advance(1000)
+    expect((w.daemon.seeds.at(-1) as GameState).gold).toBe(999)
+    expect(w.game().gold).toBeGreaterThanOrEqual(999)
+  })
+
+  test('every action carries its own id, so a resend is applied once', async ($, on) => {
+    const w = world(on, { running: newGame(5) })
+    answerBash(on, 'ok')
+    await start($, w)
+    await $.tool.call({ tool: 'Bash', command: 'ls' })
+    await $.tool.call({ tool: 'Bash', command: 'ls' })
+    await w.clock.settle()
+    const ids = w.daemon.actions.map(a => (a as { id?: string }).id)
+    expect(ids).toHaveLength(2)
+    expect(new Set(ids).size).toBe(2)
+    expect(ids.every(id => typeof id === 'string')).toBe(true)
+  })
+
+  test("a session that falls back to solo from the daemon never writes a newer version's save", async ($, on) => {
+    const future = { version: 2, gold: 99_999 }
+    const w = world(on, { save: future, running: newGame(5) })
+    await start($, w)
+    w.daemon.isRunning = false
+    w.daemon.change(g => g)
+    const options = w.options
+    options.hasRuntime = false
+    await w.clock.advance(SOLO_RETRY_MS)
+    expect(w.mode()).toBe('solo')
+    await w.clock.advance(SAVE_MS * 2)
+    await end($)
+    expect(w.store.get(SAVE_KEY)).toEqual(future)
   })
 
   test('the tool.call hook returns at once while the daemon hangs', async ($, on) => {

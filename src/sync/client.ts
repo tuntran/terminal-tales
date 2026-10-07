@@ -44,8 +44,6 @@ const MAX_OUTBOX = 1000
 /** Where node or bun may live when the session's PATH does not reach it. */
 const RUNTIME_PATHS = ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node', '/opt/homebrew/bin/bun', '/usr/local/bin/bun']
 
-/** Cleared for the launcher: a user's NODE_OPTIONS must not load code into it. */
-const LAUNCH_ENV = { NODE_OPTIONS: '' }
 
 /**
  * What the client needs from the engine. The hooks module builds it over `$`,
@@ -58,6 +56,7 @@ export type Host = {
   readFile: (path: string) => Promise<string>
   exists: (path: string) => Promise<boolean>
   home: () => Promise<string | undefined>
+  path: () => Promise<string | undefined>
   storeGet: (key: string) => Promise<unknown>
   storeSet: (key: string, value: unknown) => Promise<void>
   now: () => Promise<number>
@@ -83,6 +82,11 @@ let mode: SyncMode = 'starting'
 let cursor = { epoch: '', seq: -1 }
 let outbox: DaemonAction[] = []
 let isFlushing = false
+/** The action whose `/action` request is out now, if any. */
+let inFlight: DaemonAction | null = null
+// Action ids: this module copy's own tag and a counter, unique enough to tell a resend.
+const sender = Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0')
+let sent = 0
 let ensuring: Promise<Ensured> | null = null
 let link: Link | null = null
 let runtime: string | null = null
@@ -211,11 +215,11 @@ async function launch(host: Host, where: Link): Promise<'ok' | Failure> {
   const found = await findRuntime(host, where)
   if (found === null) return 'no-runtime'
   try {
-    const ran = await host.run([found, `${host.root}/dist/launch.js`, '--detach', where.dataDir], {
-      cwd: where.dataDir,
-      env: LAUNCH_ENV,
-      timeoutMs: LAUNCH_TIMEOUT_MS,
-    })
+    // `env -i`: the launcher starts from an empty environment, so nothing like
+    // NODE_OPTIONS or BUN_OPTIONS from the session loads code into it.
+    const path = (await host.path()) ?? '/usr/bin:/bin'
+    const argv = ['/usr/bin/env', '-i', `PATH=${path}`, `HOME=${where.home}`, found, `${host.root}/dist/launch.js`, '--detach', where.dataDir]
+    const ran = await host.run(argv, { cwd: where.dataDir, timeoutMs: LAUNCH_TIMEOUT_MS })
     return ran.exitCode === 0 ? 'ok' : 'failed'
   } catch {
     return 'failed'
@@ -241,9 +245,9 @@ async function doEnsure(host: Host): Promise<Ensured> {
     return { failure: 'failed' }
   }
   let answer = await hello(host, where)
-  // A daemon from another build steps down for a version as new as its own;
-  // an older plugin uses the newer daemon as it is.
-  if (answer !== null && answer.build !== mine.build && compareVersions(mine.version, answer.version) >= 0) {
+  // A daemon from an older version steps down for this one. Any other daemon
+  // is used as it is: two builds of one version must not take turns.
+  if (answer !== null && answer.build !== mine.build && compareVersions(mine.version, answer.version) > 0) {
     const query = `?build=${encodeURIComponent(mine.build)}&version=${encodeURIComponent(mine.version)}`
     const reply = await call<{ ok: boolean }>(host, where, 'POST', `/shutdown${query}`, undefined, HELLO_TIMEOUT_MS).catch(() => null)
     if (reply?.ok === true) {
@@ -272,23 +276,41 @@ function ensureDaemon(host: Host): Promise<Ensured> {
 // ---------- the world ----------
 
 /**
- * Hands the daemon its first world: the save in `$.store` the first time,
- * and after a solo run, else nothing, which makes it start a new game. Of
- * two sessions seeding at once the daemon adopts one.
+ * Hands an empty daemon its world: the one this session was showing when
+ * the daemon lost its own, else the save in `$.store` the first time and
+ * after a solo run, else nothing, which makes it start a new game. Of two
+ * sessions seeding at once the daemon adopts one.
  */
 async function seed(host: Host, where: Link): Promise<void> {
+  const shown = mode === 'daemon' ? parseSave(await host.readGame()) : null
   const migrated = (await host.storeGet(MIGRATED_KEY)) === true
-  const save = migrated ? null : parseSave(await host.storeGet(SAVE_KEY))
+  const save = shown ?? (migrated ? null : parseSave(await host.storeGet(SAVE_KEY)))
   const reply = await call<SeedReply>(host, where, 'POST', '/seed', { game: save }, ACTION_TIMEOUT_MS)
   if (reply.adopted) await host.storeSet(MIGRATED_KEY, true)
 }
 
-/** Shows each new world until the daemon stops answering or a newer loop takes over. */
-async function poll(host: Host, gen: number, where: Link): Promise<WorldReply['state']> {
+function isWorldReply(value: unknown): value is WorldReply {
+  if (typeof value !== 'object' || value === null) return false
+  const reply = value as Partial<WorldReply>
+  return (
+    typeof reply.epoch === 'string' &&
+    typeof reply.seq === 'number' &&
+    Number.isFinite(reply.seq) &&
+    (reply.state === 'empty' || reply.state === 'loaded' || reply.state === 'locked')
+  )
+}
+
+/**
+ * Shows each new world until the daemon stops answering or a newer loop
+ * takes over; `progress.isPolled` turns true at the first good reply.
+ */
+async function poll(host: Host, gen: number, where: Link, progress: { isPolled: boolean }): Promise<WorldReply['state']> {
   while (gen === generation) {
     const query = `/world?since=${cursor.seq}&epoch=${encodeURIComponent(cursor.epoch)}`
-    const reply = await call<WorldReply>(host, where, 'GET', query, undefined, POLL_TIMEOUT_MS)
+    const reply = await call<unknown>(host, where, 'GET', query, undefined, POLL_TIMEOUT_MS)
     if (gen !== generation) break
+    if (!isWorldReply(reply)) throw new Error('not a world reply')
+    progress.isPolled = true
     // A restarted daemon counts from zero again under a new epoch.
     if (reply.epoch !== cursor.epoch) cursor = { epoch: reply.epoch, seq: -1 }
     if (reply.seq <= cursor.seq) continue
@@ -300,22 +322,31 @@ async function poll(host: Host, gen: number, where: Link): Promise<WorldReply['s
   return 'loaded'
 }
 
+/**
+ * The session's sync loop: find the daemon, seed it when empty, poll it, and
+ * on failure back off, then play solo after three failures in a row. A
+ * failure is a daemon that cannot be started, or one that answers `/hello`
+ * but never gives a good world.
+ */
 async function run(host: Host, gen: number): Promise<void> {
   let failures = 0
+  const fail = async (why: Failure): Promise<void> => {
+    failures += 1
+    if (why !== 'failed' || failures >= 3) {
+      await enterSolo(host, why)
+      await host.sleep(SOLO_RETRY_MS)
+    } else {
+      await host.sleep(1000 * failures)
+    }
+  }
   while (gen === generation) {
     const ensured = await ensureDaemon(host)
     if (gen !== generation) return
     if ('failure' in ensured) {
-      failures += 1
-      if (ensured.failure !== 'failed' || failures >= 3) {
-        await enterSolo(host, ensured.failure)
-        await host.sleep(SOLO_RETRY_MS)
-      } else {
-        await host.sleep(1000 * failures)
-      }
+      await fail(ensured.failure)
       continue
     }
-    failures = 0
+    const progress = { isPolled: false }
     try {
       let state = ensured.hello.state
       if (state === 'empty') {
@@ -331,7 +362,7 @@ async function run(host: Host, gen: number): Promise<void> {
       await leaveSolo(host)
       await setMode(host, 'daemon')
       void flush(host).catch(() => undefined)
-      const ended = await poll(host, gen, ensured.link)
+      const ended = await poll(host, gen, ensured.link, progress)
       if (ended === 'locked') {
         await enterLocked(host)
         await host.sleep(SOLO_RETRY_MS)
@@ -340,7 +371,13 @@ async function run(host: Host, gen: number): Promise<void> {
     } catch {
       // The daemon went away mid-poll: look for it again.
     }
-    if (gen === generation) await host.sleep(250)
+    if (gen !== generation) return
+    if (progress.isPolled) {
+      failures = 0
+      await host.sleep(250)
+    } else {
+      await fail('failed')
+    }
   }
 }
 
@@ -360,12 +397,16 @@ async function flush(host: Host): Promise<void> {
     while (outbox.length > 0 && mode === 'daemon' && link !== null) {
       const action = outbox[0]!
       let reply: ActionReply
+      inFlight = action
       try {
         reply = await call<ActionReply>(host, link, 'POST', '/action', action, ACTION_TIMEOUT_MS)
       } catch {
         return
+      } finally {
+        inFlight = null
       }
-      outbox.shift()
+      // The outbox may have moved on meanwhile (trimmed, or drained into a solo game).
+      if (outbox[0] === action) outbox.shift()
       if (!reply.ok && action.kind === 'hero') host.toast(heroError(reply.error))
     }
   } finally {
@@ -388,7 +429,8 @@ async function applyLocal(host: Host, action: DaemonAction): Promise<void> {
 export async function submit(host: Host, action: DaemonAction): Promise<void> {
   if (mode === 'solo' || mode === 'locked') return applyLocal(host, action)
   if (outbox.length >= MAX_OUTBOX) outbox.shift()
-  outbox.push(action)
+  sent += 1
+  outbox.push({ ...action, id: `${sender}-${sent}` })
   void flush(host).catch(() => undefined)
 }
 
@@ -409,8 +451,9 @@ function startSoloTimers(host: Host): void {
   ]
 }
 
+/** Applies what never reached the daemon to the local game; the one on its way there is left to it. */
 async function drainOutbox(host: Host): Promise<void> {
-  const queued = outbox
+  const queued = outbox.filter(action => action !== inFlight)
   outbox = []
   for (const action of queued) await applyLocal(host, action)
 }
@@ -421,20 +464,17 @@ async function drainOutbox(host: Host): Promise<void> {
  */
 async function enterSolo(host: Host, why: Failure): Promise<void> {
   if (mode === 'solo') return
+  // Whatever game this session goes on with, the save in the store is only
+  // written over when this version can read it, or after keeping it aside.
   const raw = await host.storeGet(SAVE_KEY)
-  let g = mode === 'daemon' ? await host.readGame() : parseSave(raw)
-  isSoloWritable = true
-  if (g === null) {
-    g = newGame(Math.floor(await host.now()))
-    if (isNewerSave(raw)) {
-      isSoloWritable = false
-      toastOnce(host, 'newer', 'Terminal Tales: save do phiên bản mới hơn tạo. Phiên này chơi tạm và không ghi đè save đó.')
-    } else if (raw !== undefined) {
-      // Keep what could not be read, so a fix can still recover it.
-      await host.storeSet(UNREADABLE_KEY, raw)
-    }
+  const stored = parseSave(raw)
+  isSoloWritable = !isNewerSave(raw)
+  if (!isSoloWritable) {
+    toastOnce(host, 'newer', 'Terminal Tales: save do phiên bản mới hơn tạo. Phiên này chơi tạm và không ghi đè save đó.')
+  } else if (raw !== undefined && stored === null) {
+    await host.storeSet(UNREADABLE_KEY, raw)
   }
-  const loaded = g
+  const loaded = (mode === 'daemon' ? await host.readGame() : null) ?? stored ?? newGame(Math.floor(await host.now()))
   await host.updateGame(() => loaded)
   await setMode(host, 'solo')
   await drainOutbox(host)

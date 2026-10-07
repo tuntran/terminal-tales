@@ -65,6 +65,8 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 describe('protocol', () => {
   test('plain and hero actions parse; anything else is refused', () => {
     expect(parseAction({ kind: 'prompt' })).toEqual({ kind: 'prompt' })
+    expect(parseAction({ kind: 'prompt', id: 'x1' })).toEqual({ kind: 'prompt', id: 'x1' })
+    expect(parseAction({ kind: 'prompt', id: 7 })).toBeNull()
     expect(parseAction({ kind: 'toolCall' })).toEqual({ kind: 'toolCall' })
     expect(parseAction({ kind: 'hero', op: 'sell', itemId: 'i3' })).toEqual({ kind: 'hero', op: 'sell', itemId: 'i3' })
     expect(parseAction({ kind: 'hero', op: 'upgrade', heroId: 'h1', slot: 'weapon' })).toEqual({
@@ -173,6 +175,15 @@ describe('actions', () => {
     expect((await world(dir)).game?.effects.map(e => e.kind)).toEqual(['rally'])
   })
 
+  test('an action sent twice under one id applies once', async () => {
+    const dir = seeded(tempDir())
+    await start(dir, { stepMs: 60_000 })
+    await call(dir, 'POST', '/action', { kind: 'toolCall', id: 'a1' })
+    await call(dir, 'POST', '/action', { kind: 'toolCall', id: 'a1' })
+    await call(dir, 'POST', '/action', { kind: 'toolCall', id: 'a2' })
+    expect((await world(dir)).game?.stats.toolCalls).toBe(2)
+  })
+
   test("a hero op's own refusal comes back verbatim and changes nothing", async () => {
     const dir = seeded(tempDir())
     await start(dir, { stepMs: 60_000 })
@@ -240,6 +251,39 @@ describe('lock and lifecycle', () => {
     expect(results.filter(d => d !== null)).toHaveLength(1)
   })
 
+  test('of six processes racing over a stale lock and socket exactly one serves, round after round', async () => {
+    const script = join(tempDir(), 'contender.ts')
+    writeFileSync(
+      script,
+      `import { startDaemon } from ${JSON.stringify(join(import.meta.dir, 'server.ts'))}
+const d = await startDaemon({ dataDir: process.argv[2], build: 'b', version: '1.0.0', idleMs: 1500, log: () => undefined, onExit: () => process.exit(0) })
+console.log(d === null ? 'aside' : 'serving')
+if (d === null) process.exit(0)
+`,
+    )
+    for (let round = 0; round < 15; round += 1) {
+      const dir = tempDir()
+      const files = dataFiles(dir)
+      writeFileSync(files.lock, JSON.stringify({ pid: 1, epoch: 'old' }))
+      writeFileSync(files.socket, '')
+      const old = new Date(Date.now() - 60_000)
+      utimesSync(files.lock, old, old)
+      const outputs = await Promise.all(
+        Array.from({ length: 6 }, () =>
+          new Promise<string>(resolve => {
+            const child = spawn('bun', [script, dir])
+            let out = ''
+            child.stdout.on('data', (c: Buffer) => (out += c.toString()))
+            child.on('exit', () => resolve(out.trim()))
+          }),
+        ),
+      )
+      expect(outputs.filter(o => o === 'serving'), `round ${round}: ${outputs.join(',')}`).toHaveLength(1)
+      expect(existsSync(files.socket)).toBe(false)
+      expect(existsSync(files.lock)).toBe(false)
+    }
+  }, 120_000)
+
   test('a second daemon sees the live one and steps aside', async () => {
     const dir = tempDir()
     const first = await start(dir)
@@ -298,13 +342,14 @@ describe('lock and lifecycle', () => {
     running.splice(0)
   })
 
-  test('shutdown is refused from the same build or an older version, and accepted otherwise', async () => {
+  test('shutdown is refused from the same build or a version not newer, and accepted otherwise', async () => {
     const dir = seeded(tempDir())
     let exited = -1
     await start(dir, { onExit: code => (exited = code) })
     expect((await call(dir, 'POST', '/shutdown?build=b1&version=9.0.0')).body).toEqual({ ok: false, reason: 'same-build' })
-    expect((await call(dir, 'POST', '/shutdown?build=b2&version=0.9.0')).body).toEqual({ ok: false, reason: 'older-version' })
-    expect((await call(dir, 'POST', '/shutdown?build=b2&version=1.0.0')).body).toEqual({ ok: true })
+    expect((await call(dir, 'POST', '/shutdown?build=b2&version=0.9.0')).body).toEqual({ ok: false, reason: 'not-newer' })
+    expect((await call(dir, 'POST', '/shutdown?build=b2&version=1.0.0')).body).toEqual({ ok: false, reason: 'not-newer' })
+    expect((await call(dir, 'POST', '/shutdown?build=b2&version=1.0.1')).body).toEqual({ ok: true })
     await sleep(100)
     expect(exited).toBe(0)
     running.splice(0)

@@ -1,5 +1,5 @@
 // daemon/server.ts
-import { chmodSync as chmodSync2, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync as chmodSync2, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { dirname, join as join2 } from "node:path";
 
@@ -543,14 +543,19 @@ function parseAction(raw) {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
     return null;
   const body = raw;
-  const kind = Object.hasOwn(body, "kind") ? body.kind : undefined;
-  if (typeof kind !== "string")
+  const field = (name) => Object.hasOwn(body, name) ? body[name] : undefined;
+  const kind = field("kind");
+  const id = field("id");
+  if (typeof kind !== "string" || id !== undefined && !isId(id))
     return null;
+  const action = parseKind(kind, field);
+  return action === null || id === undefined ? action : { ...action, id };
+}
+function parseKind(kind, field) {
   if (PLAIN_KINDS.has(kind))
     return { kind };
   if (kind !== "hero")
     return null;
-  const field = (name) => Object.hasOwn(body, name) ? body[name] : undefined;
   const op = field("op");
   switch (op) {
     case "equip": {
@@ -621,21 +626,49 @@ function buildId(text) {
 
 // daemon/server.ts
 var STARTING_GRACE_MS = 2000;
+var LOCK_STALE_MS = 1e4;
+var HEARTBEAT_MS = 2000;
+var PROBE_TIMEOUT_MS = 2000;
+var MAX_APPLIED_IDS = 2000;
+var BREAK_STALE_MS = 5000;
 var LOCK_DEADLINE_MS = 8000;
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function isErrno(err, code) {
   return typeof err === "object" && err !== null && err.code === code;
 }
-function answers(socketPath) {
+function probe(socketPath) {
   return new Promise((resolve) => {
-    const req = request({ socketPath, path: "/hello", method: "GET", timeout: 1000 }, (res) => {
+    const req = request({ socketPath, path: "/hello", method: "GET", timeout: PROBE_TIMEOUT_MS }, (res) => {
       res.resume();
-      resolve(res.statusCode === 200);
+      resolve(res.statusCode === 200 ? "alive" : "silent");
     });
-    req.on("timeout", () => req.destroy());
-    req.on("error", () => resolve(false));
+    req.on("timeout", () => {
+      resolve("silent");
+      req.destroy();
+    });
+    req.on("error", (err) => resolve(isErrno(err, "ENOENT") || isErrno(err, "ECONNREFUSED") ? "dead" : "silent"));
     req.end();
   });
+}
+function breakStale(lock, judgedIno) {
+  const breaker = `${lock}.break`;
+  try {
+    writeFileSync(breaker, String(process.pid), { flag: "wx", mode: 384 });
+  } catch (err) {
+    if (!isErrno(err, "EEXIST"))
+      throw err;
+    try {
+      if (Date.now() - statSync(breaker).mtimeMs > BREAK_STALE_MS)
+        rmSync(breaker, { force: true });
+    } catch {}
+    return;
+  }
+  try {
+    if (statSync(lock).ino === judgedIno)
+      rmSync(lock, { force: true });
+  } catch {} finally {
+    rmSync(breaker, { force: true });
+  }
 }
 async function takeLock(lock, socket, epoch) {
   const deadline = Date.now() + LOCK_DEADLINE_MS;
@@ -647,28 +680,18 @@ async function takeLock(lock, socket, epoch) {
       if (!isErrno(err, "EEXIST"))
         throw err;
     }
-    if (await answers(socket))
+    const seen = await probe(socket);
+    if (seen === "alive")
       return false;
-    let age;
+    let judged;
     try {
-      age = Date.now() - statSync(lock).mtimeMs;
+      judged = statSync(lock);
     } catch {
       continue;
     }
-    if (age < STARTING_GRACE_MS) {
-      await sleep(100);
-      continue;
-    }
-    const stale = `${lock}.stale-${process.pid}`;
-    try {
-      renameSync(lock, stale);
-    } catch (err) {
-      if (!isErrno(err, "ENOENT"))
-        throw err;
-      await sleep(50);
-      continue;
-    }
-    rmSync(stale, { force: true });
+    if (Date.now() - judged.mtimeMs >= (seen === "dead" ? STARTING_GRACE_MS : LOCK_STALE_MS))
+      breakStale(lock, judged.ino);
+    await sleep(50 + Math.random() * 50);
   }
   return false;
 }
@@ -762,12 +785,13 @@ async function startDaemon(options) {
   let lastActivity = Date.now();
   let isStopping = false;
   let openRequests = 0;
+  const applied = new Set;
   const waiters = new Set;
   const world = () => ({ epoch, seq, state, game });
   function save() {
-    if (state !== "loaded" || game === null || !isDirty)
+    if (state !== "loaded" || game === null || !isDirty || !ownsLock(files.lock, epoch))
       return;
-    const tmp = `${files.world}.tmp`;
+    const tmp = `${files.world}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(game), { mode: 384 });
     renameSync(tmp, files.world);
     isDirty = false;
@@ -827,6 +851,13 @@ async function startDaemon(options) {
           return send(res, 200, { ok: false, error: "locked" });
         if (state === "empty" || game === null)
           return send(res, 200, { ok: false, error: "not-ready" });
+        if (action.id !== undefined) {
+          if (applied.has(action.id))
+            return send(res, 200, { ok: true, seq });
+          applied.add(action.id);
+          if (applied.size > MAX_APPLIED_IDS)
+            applied.delete(applied.values().next().value);
+        }
         const result = applyDaemonAction(game, action);
         if (result.error !== undefined)
           return send(res, 200, { ok: false, error: result.error });
@@ -838,8 +869,8 @@ async function startDaemon(options) {
         const theirVersion = url.searchParams.get("version") ?? "";
         if (theirBuild === build)
           return send(res, 200, { ok: false, reason: "same-build" });
-        if (compareVersions(theirVersion, version) < 0) {
-          return send(res, 200, { ok: false, reason: "older-version" });
+        if (compareVersions(theirVersion, version) <= 0) {
+          return send(res, 200, { ok: false, reason: "not-newer" });
         }
         send(res, 200, { ok: true });
         stop(`shutdown for build ${theirBuild} ${theirVersion}`);
@@ -868,6 +899,10 @@ async function startDaemon(options) {
       send(res, 500, { ok: false, error: "internal" });
     });
   });
+  if (!ownsLock(files.lock, epoch)) {
+    log("lost the lock before listening: exiting");
+    return null;
+  }
   rmSync(files.socket, { force: true });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -877,6 +912,7 @@ async function startDaemon(options) {
     });
   });
   chmodSync2(files.socket, 384);
+  const boundIno = statSync(files.socket).ino;
   const timers = [
     setInterval(() => {
       if (state === "loaded" && game !== null)
@@ -892,16 +928,25 @@ async function startDaemon(options) {
     setInterval(() => {
       if (openRequests === 0 && Date.now() - lastActivity >= idleMs)
         stop("idle");
-    }, Math.min(1000, idleMs))
+    }, Math.min(1000, idleMs)),
+    setInterval(() => {
+      if (!ownsLock(files.lock, epoch))
+        return void stop("lost the lock", false);
+      try {
+        const now = new Date;
+        utimesSync(files.lock, now, now);
+      } catch {}
+    }, HEARTBEAT_MS)
   ];
-  async function stop(reason) {
+  async function stop(reason, isOwner = true) {
     if (isStopping)
       return;
     isStopping = true;
     for (const timer of timers)
       clearInterval(timer);
     try {
-      save();
+      if (isOwner)
+        save();
     } catch (err) {
       log(`final save failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -914,9 +959,13 @@ async function startDaemon(options) {
       server.close(() => resolve());
       server.closeAllConnections();
     });
-    rmSync(files.socket, { force: true });
-    if (ownsLock(files.lock, epoch))
+    if (isOwner && ownsLock(files.lock, epoch)) {
+      try {
+        if (statSync(files.socket).ino === boundIno)
+          rmSync(files.socket, { force: true });
+      } catch {}
       rmSync(files.lock, { force: true });
+    }
     log(`stopped: ${reason}`);
     onExit(0);
   }
@@ -955,5 +1004,5 @@ if (process.argv[2] === DAEMON_MARK) {
 }
 export {
   startDaemon,
-  answers
+  probe
 };
