@@ -4,12 +4,16 @@
   "type": "module",
   "packageManager": "bun@1.3.14",
   "scripts": {
+    "build:assets": "bun scripts/build-assets.ts",
     "build:daemon": "bun build daemon/launch.ts daemon/server.ts --target=node --outdir dist",
+    "check:assets": "rm -rf .assets-check && bun scripts/build-assets.ts --out .assets-check && diff -r .assets-check/build assets/build && diff .assets-check/atlas-manifest.ts src/ui/atlas-manifest.ts && rm -rf .assets-check",
     "check:daemon": "rm -rf .daemon-check && bun build daemon/launch.ts daemon/server.ts --target=node --outdir .daemon-check && diff -r .daemon-check dist && rm -rf .daemon-check",
     "test:daemon": "bun test daemon",
     "typecheck:daemon": "tsc -p daemon"
   },
   "devDependencies": {
-    "@types/bun": "1.3.14"
+    "@types/bun": "1.3.14",
+    "@types/pngjs": "^6.0.5",
+    "pngjs": "^7.0.0"
   }
 }

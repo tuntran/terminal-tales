@@ -7,3 +7,5 @@ node_modules/
 !dist/
 # Sprite and background art ships with the plugin; credits in assets/CREDITS.md
 !assets/
+!assets/build/
+.assets-check/
