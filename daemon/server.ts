@@ -94,7 +94,7 @@ export function probe(socketPath: string): Promise<Probe> {
  * just written in its place. A breaker that died mid-break leaves its file,
  * which is cleared once it is clearly old.
  */
-function breakStale(lock: string, judgedIno: number): void {
+function breakStale(lock: string, judged: string): void {
   const breaker = `${lock}.break`
   try {
     writeFileSync(breaker, String(process.pid), { flag: 'wx', mode: 0o600 })
@@ -108,7 +108,7 @@ function breakStale(lock: string, judgedIno: number): void {
     return
   }
   try {
-    if (statSync(lock).ino === judgedIno) rmSync(lock, { force: true })
+    if (readFileSync(lock, 'utf8') === judged) rmSync(lock, { force: true })
   } catch {
     // Gone already.
   } finally {
@@ -135,16 +135,46 @@ async function takeLock(lock: string, socket: string, epoch: string): Promise<bo
     }
     const seen = await probe(socket)
     if (seen === 'alive') return false
-    let judged: { ino: number; mtimeMs: number }
+    // Judged by its content, whose epoch is unique to its daemon: an inode
+    // may be handed to the next lock written in its place.
+    let judged: string
+    let age: number
     try {
-      judged = statSync(lock)
+      judged = readFileSync(lock, 'utf8')
+      age = Date.now() - statSync(lock).mtimeMs
     } catch {
       continue
     }
-    if (Date.now() - judged.mtimeMs >= (seen === 'dead' ? STARTING_GRACE_MS : LOCK_STALE_MS)) breakStale(lock, judged.ino)
+    if (age >= (seen === 'dead' ? STARTING_GRACE_MS : LOCK_STALE_MS)) breakStale(lock, judged)
     await sleep(50 + Math.random() * 50)
   }
   return false
+}
+
+/**
+ * True when the lock now names another daemon. A lock that cannot be read
+ * right now (mid-write, a passing I/O error) is not taken as lost, and one
+ * someone deleted is written again, so a running daemon never stops saving.
+ */
+function lockTakenFrom(lock: string, epoch: string): boolean {
+  let text: string
+  try {
+    text = readFileSync(lock, 'utf8')
+  } catch (err) {
+    if (isErrno(err, 'ENOENT')) {
+      try {
+        writeFileSync(lock, JSON.stringify({ pid: process.pid, epoch }), { flag: 'wx', mode: 0o600 })
+      } catch {
+        // Another daemon wrote one first: the next beat reads it.
+      }
+    }
+    return false
+  }
+  try {
+    return (JSON.parse(text) as { epoch?: unknown }).epoch !== epoch
+  } catch {
+    return false
+  }
 }
 
 function ownsLock(lock: string, epoch: string): boolean {
@@ -311,13 +341,13 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon | null
         if (action === null) return send(res, 400, { ok: false, error: 'bad-action' } satisfies ActionReply)
         if (state === 'locked') return send(res, 200, { ok: false, error: 'locked' } satisfies ActionReply)
         if (state === 'empty' || game === null) return send(res, 200, { ok: false, error: 'not-ready' } satisfies ActionReply)
+        if (action.id !== undefined && applied.has(action.id)) return send(res, 200, { ok: true, seq } satisfies ActionReply)
+        const result = applyDaemonAction(game, action)
+        if (result.error !== undefined) return send(res, 200, { ok: false, error: result.error } satisfies ActionReply)
         if (action.id !== undefined) {
-          if (applied.has(action.id)) return send(res, 200, { ok: true, seq } satisfies ActionReply)
           applied.add(action.id)
           if (applied.size > MAX_APPLIED_IDS) applied.delete(applied.values().next().value as string)
         }
-        const result = applyDaemonAction(game, action)
-        if (result.error !== undefined) return send(res, 200, { ok: false, error: result.error } satisfies ActionReply)
         changed(result.state)
         return send(res, 200, { ok: true, seq } satisfies ActionReply)
       }
@@ -388,7 +418,8 @@ export async function startDaemon(options: DaemonOptions): Promise<Daemon | null
       if (openRequests === 0 && Date.now() - lastActivity >= idleMs) void stop('idle')
     }, Math.min(1000, idleMs)),
     setInterval(() => {
-      if (!ownsLock(files.lock, epoch)) return void stop('lost the lock', false)
+      if (lockTakenFrom(files.lock, epoch)) return void stop('lost the lock', false)
+      if (!ownsLock(files.lock, epoch)) return
       try {
         const now = new Date()
         utimesSync(files.lock, now, now)

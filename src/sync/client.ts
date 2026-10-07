@@ -85,7 +85,7 @@ let isFlushing = false
 /** The action whose `/action` request is out now, if any. */
 let inFlight: DaemonAction | null = null
 // Action ids: this module copy's own tag and a counter, unique enough to tell a resend.
-const sender = Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0')
+const sender = Array.from({ length: 4 }, () => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0')).join('')
 let sent = 0
 let ensuring: Promise<Ensured> | null = null
 let link: Link | null = null
@@ -93,6 +93,11 @@ let runtime: string | null = null
 let soloTimers: Timer[] = []
 let isSoloWritable = true
 const toasted = new Set<string>()
+
+/** True while this session runs its own game (solo or locked), not the daemon's. */
+function isLocal(): boolean {
+  return mode === 'solo' || mode === 'locked'
+}
 
 function toastOnce(host: Host, key: string, text: string): void {
   if (toasted.has(key)) return
@@ -401,6 +406,9 @@ async function flush(host: Host): Promise<void> {
       try {
         reply = await call<ActionReply>(host, link, 'POST', '/action', action, ACTION_TIMEOUT_MS)
       } catch {
+        // The session went solo while this was out: the drain left it to the
+        // daemon, which did not take it, so the solo game does.
+        if (isLocal()) await applyLocal(host, action)
         return
       } finally {
         inFlight = null
@@ -427,7 +435,7 @@ async function applyLocal(host: Host, action: DaemonAction): Promise<void> {
 
 /** Takes an action from a hook or the pane and returns at once: the daemon gets it in the background. */
 export async function submit(host: Host, action: DaemonAction): Promise<void> {
-  if (mode === 'solo' || mode === 'locked') return applyLocal(host, action)
+  if (isLocal()) return applyLocal(host, action)
   if (outbox.length >= MAX_OUTBOX) outbox.shift()
   sent += 1
   outbox.push({ ...action, id: `${sender}-${sent}` })

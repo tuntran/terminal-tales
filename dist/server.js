@@ -650,7 +650,7 @@ function probe(socketPath) {
     req.end();
   });
 }
-function breakStale(lock, judgedIno) {
+function breakStale(lock, judged) {
   const breaker = `${lock}.break`;
   try {
     writeFileSync(breaker, String(process.pid), { flag: "wx", mode: 384 });
@@ -664,7 +664,7 @@ function breakStale(lock, judgedIno) {
     return;
   }
   try {
-    if (statSync(lock).ino === judgedIno)
+    if (readFileSync(lock, "utf8") === judged)
       rmSync(lock, { force: true });
   } catch {} finally {
     rmSync(breaker, { force: true });
@@ -684,16 +684,36 @@ async function takeLock(lock, socket, epoch) {
     if (seen === "alive")
       return false;
     let judged;
+    let age;
     try {
-      judged = statSync(lock);
+      judged = readFileSync(lock, "utf8");
+      age = Date.now() - statSync(lock).mtimeMs;
     } catch {
       continue;
     }
-    if (Date.now() - judged.mtimeMs >= (seen === "dead" ? STARTING_GRACE_MS : LOCK_STALE_MS))
-      breakStale(lock, judged.ino);
+    if (age >= (seen === "dead" ? STARTING_GRACE_MS : LOCK_STALE_MS))
+      breakStale(lock, judged);
     await sleep(50 + Math.random() * 50);
   }
   return false;
+}
+function lockTakenFrom(lock, epoch) {
+  let text;
+  try {
+    text = readFileSync(lock, "utf8");
+  } catch (err) {
+    if (isErrno(err, "ENOENT")) {
+      try {
+        writeFileSync(lock, JSON.stringify({ pid: process.pid, epoch }), { flag: "wx", mode: 384 });
+      } catch {}
+    }
+    return false;
+  }
+  try {
+    return JSON.parse(text).epoch !== epoch;
+  } catch {
+    return false;
+  }
 }
 function ownsLock(lock, epoch) {
   try {
@@ -851,16 +871,16 @@ async function startDaemon(options) {
           return send(res, 200, { ok: false, error: "locked" });
         if (state === "empty" || game === null)
           return send(res, 200, { ok: false, error: "not-ready" });
+        if (action.id !== undefined && applied.has(action.id))
+          return send(res, 200, { ok: true, seq });
+        const result = applyDaemonAction(game, action);
+        if (result.error !== undefined)
+          return send(res, 200, { ok: false, error: result.error });
         if (action.id !== undefined) {
-          if (applied.has(action.id))
-            return send(res, 200, { ok: true, seq });
           applied.add(action.id);
           if (applied.size > MAX_APPLIED_IDS)
             applied.delete(applied.values().next().value);
         }
-        const result = applyDaemonAction(game, action);
-        if (result.error !== undefined)
-          return send(res, 200, { ok: false, error: result.error });
         changed(result.state);
         return send(res, 200, { ok: true, seq });
       }
@@ -930,8 +950,10 @@ async function startDaemon(options) {
         stop("idle");
     }, Math.min(1000, idleMs)),
     setInterval(() => {
-      if (!ownsLock(files.lock, epoch))
+      if (lockTakenFrom(files.lock, epoch))
         return void stop("lost the lock", false);
+      if (!ownsLock(files.lock, epoch))
+        return;
       try {
         const now = new Date;
         utimesSync(files.lock, now, now);
