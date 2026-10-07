@@ -7,8 +7,13 @@ import type { GameState, Item } from '../types'
 import { applyDaemonAction, buildId, parseAction, type WorldState } from '../daemon/protocol'
 import { MIGRATED_KEY, SAVE_KEY, SAVE_MS, STEP_MS, UNREADABLE_KEY } from '../hooks/register'
 import { FRAME_MS } from '../src/ui/animation'
+import { ATLAS } from '../src/ui/atlas-manifest'
+import { NO_PICTURES, SCENE_COLUMNS, SCENE_ROWS, TOO_SMALL } from '../src/ui/band'
+import { toBase64 } from '../src/ui/base64'
+import { FRAME_HEIGHT, FRAME_WIDTH } from '../src/ui/frame-buffer'
 import { newGame, step } from '../src/game/engine'
 import { SOLO_RETRY_MS } from '../src/sync/client'
+import { fakeAtlasBytes } from './fake-atlas'
 
 const SURFACES = ['terminal', 'desktop'] as const
 const HOME = '/home/tt'
@@ -60,6 +65,10 @@ type WorldOptions = {
   running?: GameState | null
   /** False when neither node nor bun can be found. */
   hasRuntime?: boolean
+  /** How the plugin's packed art reads: the default, frames that never change, or missing files. */
+  art?: 'moving' | 'still' | 'missing'
+  /** True for a daemon that never steps the fight, so nothing on the scene moves by itself. */
+  paused?: boolean
 }
 
 /** The engine beneath the plugin: the nouns it calls, answered from memory. */
@@ -107,7 +116,7 @@ function world(on: On, options: WorldOptions = {}): World {
   void (async () => {
     for (;;) {
       await clock.sleep(STEP_MS)
-      if (daemon.isRunning && daemon.state === 'loaded') daemon.change(step)
+      if (daemon.isRunning && daemon.state === 'loaded' && options.paused !== true) daemon.change(step)
     }
   })()
   const w: World = {
@@ -157,6 +166,10 @@ function world(on: On, options: WorldOptions = {}): World {
   on('fs.read', (_$, e) => {
     if (e.path.endsWith('/dist/server.js')) return { value: BUNDLE } as never
     if (e.path.endsWith('/.claude-plugin/plugin.json')) return { value: JSON.stringify({ version: '0.1.0' }) } as never
+    const entry = Object.values(ATLAS).find(a => e.path.endsWith(`/assets/build/${a.file}`))
+    if (entry !== undefined && options.art !== 'missing') {
+      return { value: { base64: toBase64(fakeAtlasBytes(entry, options.art === 'still')) } } as never
+    }
     throw new Error(`ENOENT: ${e.path}`)
   })
   on('fs.exists', () => ({ value: false }) as never)
@@ -615,53 +628,20 @@ describe('user actions', () => {
     await $.prompt.submit({ text: 'hi', origin: { kind: 'composer' } } as never)
     await $.turn.complete({ turnId: 't', reason: 'aborted', answer: '', durationMs: 1, isAborted: true })
     expect(effects((await w.shown()))).toEqual(['rally', 'enrage'])
-    for (const surface of SURFACES) {
-      const ui = await $.ui.mount({
-        plugin: 'terminal-tales',
-        surface,
-        component: 'AbovePrompt',
-        props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 140, scroll: { top: 0, bodyRows: 19, contentRows: 0 }, view: {} } as never,
-      })
-      const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
-      expect(texts, surface).toContain('Hô khiến')
-      expect(texts, surface).toContain('Nổi giận')
-      await ui.unmount()
-    }
+    const ui = await $.ui.mount({
+      plugin: 'terminal-tales',
+      surface: 'terminal',
+      component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 140, scroll: { top: 0, bodyRows: 19, contentRows: 0 }, view: {} } as never,
+    })
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
+    expect(texts).toContain('Hô khiến')
+    expect(texts).toContain('Nổi giận')
+    await ui.unmount()
   })
 })
 
 describe('band', () => {
-  test('draws the party and the monster above the prompt at every width', async ($, on) => {
-    const w = world(on)
-    await start($, w)
-    const g = w.game()
-    for (const surface of SURFACES) {
-      for (const [bodyColumns, maxRows] of [[120, 10], [60, 10], [30, 10], [120, 3]] as const) {
-        const ui = await $.ui.mount({
-          plugin: 'terminal-tales',
-          surface,
-          component: 'AbovePrompt',
-          props: {
-            hasSurvey: false,
-            isWorking: false,
-            maxRows,
-            bodyColumns,
-            scroll: { top: 0, bodyRows: 9, contentRows: 0 },
-            view: {},
-          } as never,
-        })
-        const found = await ui.findAll({ type: 'Text' })
-        const texts = found.map(t => t.text).join('\n')
-        if (maxRows < 5) expect(found.length, 'short band draws one line').toBe(1)
-        expect(texts, `${surface} ${bodyColumns}`).toContain(g.monster.name)
-        expect(texts, `${surface} ${bodyColumns}`).toContain(g.heroes[0]!.name)
-        await ui.unmount()
-      }
-    }
-  })
-})
-
-describe('pixel band', () => {
   const props = (bodyColumns: number, maxRows: number) =>
     ({
       hasSurvey: false,
@@ -672,54 +652,112 @@ describe('pixel band', () => {
       view: {},
     }) as never
 
-  test('the terminal draws the fight as one pixel picture with the info beside it', async ($, on) => {
+  type Source = { rgba: string; width: number; height: number }
+
+  test('the terminal draws the fight as one picture with the info beside it', async ($, on) => {
     const w = world(on)
     await start($, w)
     const ui = await $.ui.mount({ plugin: 'terminal-tales', surface: 'terminal', component: 'AbovePrompt', props: props(140, 20) })
-    const picture = await ui.find({ type: 'Raster' })
-    expect(picture).toBeDefined()
-    const { columns, rows, cells } = picture!.props as { columns: number; rows: number; cells: string }
-    expect(columns).toBeLessThanOrEqual(140)
-    expect(cells.length).toBe(Math.ceil((columns * rows * 12) / 3) * 4)
+    const pictures = await ui.findAll({ type: 'Image' })
+    expect(pictures).toHaveLength(1)
+    const picture = pictures[0]!
+    expect(picture.key).toBe('scene')
+    const { source, columns, rows, alt } = picture.props as { source: Source; columns: number; rows: number; alt: string }
+    expect([source.width, source.height]).toEqual([FRAME_WIDTH, FRAME_HEIGHT])
+    expect(source.rgba.length).toBe(Math.ceil((FRAME_WIDTH * FRAME_HEIGHT * 4) / 3) * 4)
+    expect([columns, rows]).toEqual([SCENE_COLUMNS, SCENE_ROWS])
+    expect(alt).toBe(NO_PICTURES)
     const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
     expect(texts).toContain(w.game().monster.name)
     await ui.unmount()
   })
 
-  test('a narrower terminal puts one summary line under the picture', async ($, on) => {
+  test('a band too narrow for the info column puts one summary line under the picture', async ($, on) => {
     const w = world(on)
     await start($, w)
     const ui = await $.ui.mount({ plugin: 'terminal-tales', surface: 'terminal', component: 'AbovePrompt', props: props(90, 20) })
-    expect(await ui.find({ type: 'Raster' })).toBeDefined()
+    expect(await ui.find({ type: 'Image' })).toBeDefined()
     expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join('')).toContain(w.game().heroes[0]!.name)
     await ui.unmount()
   })
 
-  test('the mounted picture animates in place through blits of the same size', async ($, on) => {
+  test('the mounted picture animates in place through blits of one size', async ($, on) => {
     const w = world(on)
-    const blits: { key: string; cells: string }[] = []
+    const blits: { key: string; source: Source }[] = []
     on('ui.blit', (_$, e) => {
-      if ('cells' in e) blits.push({ key: e.key, cells: e.cells })
+      if ('source' in e) blits.push({ key: e.key, source: e.source as Source })
       return { value: {} } as never
     })
     await start($, w)
     const ui = await $.ui.mount({ plugin: 'terminal-tales', surface: 'terminal', component: 'AbovePrompt', props: props(140, 20) })
-    const mounted = (await ui.find({ type: 'Raster' }))!.props as { cells: string }
     await w.clock.advance(FRAME_MS * 30)
     expect(blits.length).toBeGreaterThanOrEqual(20)
-    expect(blits.every(b => b.key === 'scene' && b.cells.length === mounted.cells.length)).toBe(true)
-    expect(new Set(blits.map(b => b.cells)).size).toBeGreaterThan(5)
+    expect(blits.every(b => b.key === 'scene' && b.source.width === FRAME_WIDTH && b.source.height === FRAME_HEIGHT)).toBe(true)
+    expect(new Set(blits.map(b => b.source.rgba)).size).toBeGreaterThan(5)
     await ui.unmount()
   })
 
-  test('a short band and the desktop fall back to ASCII', async ($, on) => {
+  test('a frame like the one already shown is not sent again', async ($, on) => {
+    const w = world(on, { art: 'still', paused: true })
+    const blits: string[] = []
+    on('ui.blit', (_$, e) => {
+      if ('source' in e) blits.push((e.source as Source).rgba)
+      return { value: {} } as never
+    })
+    await start($, w)
+    const ui = await $.ui.mount({ plugin: 'terminal-tales', surface: 'terminal', component: 'AbovePrompt', props: props(140, 20) })
+    // Past the first monster's walk in, nothing on the scene moves.
+    await w.clock.advance(FRAME_MS * 20)
+    const settled = blits.length
+    await w.clock.advance(FRAME_MS * 20)
+    expect(blits.length).toBe(settled)
+    expect(blits.every((rgba, i) => i === 0 || rgba !== blits[i - 1])).toBe(true)
+    await ui.unmount()
+  })
+
+  test('a denied blit stops the swaps until the band draws again', async ($, on) => {
+    // Paused, so no step of the fight redraws the band meanwhile.
+    const w = world(on, { paused: true })
+    let blits = 0
+    on('ui.blit', () => {
+      blits += 1
+      return { value: { deny: 'drawing its alt' } } as never
+    })
+    await start($, w)
+    const ui = await $.ui.mount({ plugin: 'terminal-tales', surface: 'terminal', component: 'AbovePrompt', props: props(140, 20) })
+    await w.clock.advance(FRAME_MS * 20)
+    expect(blits).toBe(1)
+    await ui.unmount()
+  })
+
+  test('the desktop, which has no pictures, shows one error line', async ($, on) => {
     const w = world(on)
     await start($, w)
-    for (const [surface, maxRows] of [['terminal', 8], ['desktop', 20]] as const) {
-      const ui = await $.ui.mount({ plugin: 'terminal-tales', surface, component: 'AbovePrompt', props: props(140, maxRows) })
-      expect(await ui.find({ type: 'Raster' }), `${surface} ${maxRows}`).toBeUndefined()
+    const ui = await $.ui.mount({ plugin: 'terminal-tales', surface: 'desktop', component: 'AbovePrompt', props: props(140, 20) })
+    expect(await ui.find({ type: 'Image' })).toBeUndefined()
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text)).toEqual([NO_PICTURES])
+    await ui.unmount()
+  })
+
+  test('a band too narrow or too short for the scene says the size it needs', async ($, on) => {
+    const w = world(on)
+    await start($, w)
+    for (const [columns, rows] of [[SCENE_COLUMNS - 1, 20], [140, SCENE_ROWS - 1], [30, 3]] as const) {
+      const ui = await $.ui.mount({ plugin: 'terminal-tales', surface: 'terminal', component: 'AbovePrompt', props: props(columns, rows) })
+      expect(await ui.find({ type: 'Image' }), `${columns}x${rows}`).toBeUndefined()
+      expect((await ui.findAll({ type: 'Text' })).map(t => t.text), `${columns}x${rows}`).toEqual([TOO_SMALL])
       await ui.unmount()
     }
+  })
+
+  test('art that cannot be read is told in a toast and in the band', async ($, on) => {
+    const w = world(on, { art: 'missing' })
+    await start($, w)
+    expect(w.toasts.some(t => t.includes('không đọc được hình'))).toBe(true)
+    const ui = await $.ui.mount({ plugin: 'terminal-tales', surface: 'terminal', component: 'AbovePrompt', props: props(140, 20) })
+    expect(await ui.find({ type: 'Image' })).toBeUndefined()
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join('')).toContain('không đọc được hình')
+    await ui.unmount()
   })
 })
 

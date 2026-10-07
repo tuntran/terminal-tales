@@ -116,23 +116,6 @@ export function monsterKind(m: Pick<Monster, 'sprite' | 'tier'>): MonsterKind {
   return kinds[i]!
 }
 
-export const HERO_SPRITES: Record<HeroClass, readonly [readonly string[], readonly string[]]> = {
-  warrior: [
-    ['  o  ', ' /|\\ ', ' / \\ '],
-    ['  o  ', ' /|--', ' / \\ '],
-  ],
-  mage: [
-    ['  ^  ', ' (o) ', ' /|\\*'],
-    ['  ^ *', ' (o)~', ' /|\\ '],
-  ],
-  ranger: [
-    ['  o  ', ' (|) ', ' / \\ '],
-    ['  o  ', ' (|>-', ' / \\ '],
-  ],
-}
-
-export const DOWN_SPRITE: readonly string[] = ['     ', '     ', ' _o_ ']
-
 export const KILLS_PER_STAGE = 10
 export const MAX_PARTY = 3
 export const MAX_INVENTORY = 24

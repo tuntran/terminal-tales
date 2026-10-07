@@ -24,8 +24,10 @@ import {
 import { isFailedRun, isGitCommit, isPassingRun, isRejectedCall, isTestCommand } from '../src/game/test-command'
 import { bar } from '../src/ui/art'
 import { BOSSES, MONSTERS, monsterKind } from '../src/game/catalog'
-import { PALETTE, PIXEL_HEROES, PIXEL_HERO_ATTACKS, PIXEL_HERO_STRIDES, decodeCells, pixelMonster } from '../src/ui/pixel-art'
-import { compose, newAnim, observe, pixelScene, tick } from '../src/ui/animation'
+import { decodeAtlas } from '../src/ui/atlas'
+import { BACKGROUNDS, type Anim, compose, hasCrit, newAnim, observe, stillAnim, stillScene, tick } from '../src/ui/animation'
+import { FRAME_HEIGHT, FRAME_WIDTH, type Frame, backdrop, blit, newFrame } from '../src/ui/frame-buffer'
+import { fakeAtlases } from './fake-atlas'
 
 function withItem(g: GameState, item: Partial<Item> = {}): GameState {
   const full: Item = { id: 'x1', name: 'Kiếm Thử', slot: 'weapon', rarity: 'rare', stage: 1, level: 0, ...item }
@@ -518,20 +520,135 @@ describe('action detection', () => {
   })
 })
 
-describe('pixel art', () => {
-  const all = [
-    ...Object.values(PIXEL_HEROES),
-    ...Object.values(PIXEL_HERO_ATTACKS),
-    ...Object.values(PIXEL_HERO_STRIDES).flat(),
-    ...[...MONSTERS, ...BOSSES].map(kind => pixelMonster(kind.asset)),
-  ]
+const ATLASES = fakeAtlases()
 
-  test('every sprite uses only palette colors', () => {
-    for (const sprite of all) {
-      for (const row of sprite) {
-        for (const key of row) expect(key === '.' || key in PALETTE, `${key} in ${row}`).toBe(true)
-      }
+/** A packed file by hand: two colors, one clip of two 2×2 frames. */
+function tinyAtlas(): Uint8Array {
+  return new Uint8Array([
+    0x54, 0x54, 0x41, 0x31, 2, 0,
+    255, 0, 0, 255,
+    0, 0, 255, 255,
+    0, 1, 2, 1,
+    2, 2, 0, 0,
+  ])
+}
+
+const TINY = { file: 'tiny.bin', clips: { idle: { frames: 2, width: 2, height: 2, offset: 0, anchorX: 1, anchorY: 1, frameMs: 100 } } }
+
+function pixel(f: Frame, x: number, y: number): number[] {
+  return Array.from(f.rgba.subarray((y * f.width + x) * 4, (y * f.width + x) * 4 + 4))
+}
+
+/** True when the two frames differ anywhere in columns [from, to). */
+function differsIn(a: Frame, b: Frame, from: number, to: number): boolean {
+  for (let y = 0; y < a.height; y += 1) {
+    for (let x = from; x < to; x += 1) if (pixel(a, x, y).join() !== pixel(b, x, y).join()) return true
+  }
+  return false
+}
+
+/** An animation that has watched `g` long enough to be idle. */
+function settled(g: GameState): Anim {
+  let a = tick(observe(newAnim(), g))
+  for (let f = 0; f < 30; f += 1) a = tick(observe(a, g))
+  return a
+}
+
+describe('atlas', () => {
+  test('decodes palette indexes into RGBA frames, index 0 transparent', () => {
+    const atlas = decodeAtlas(tinyAtlas(), TINY)
+    const [first, second] = atlas.idle!.frames
+    expect(Array.from(first!.rgba.subarray(0, 4))).toEqual([0, 0, 0, 0])
+    expect(Array.from(first!.rgba.subarray(4, 8))).toEqual([255, 0, 0, 255])
+    expect(Array.from(first!.rgba.subarray(8, 12))).toEqual([0, 0, 255, 255])
+    expect(Array.from(second!.rgba.subarray(0, 4))).toEqual([0, 0, 255, 255])
+    expect(Array.from(second!.rgba.subarray(12, 16))).toEqual([0, 0, 0, 0])
+    expect(atlas.idle).toMatchObject({ width: 2, height: 2, anchorX: 1, anchorY: 1 })
+  })
+
+  test('refuses a file of another format or one shorter than its clips', () => {
+    const wrong = tinyAtlas()
+    wrong[3] = 0x32
+    expect(() => decodeAtlas(wrong, TINY)).toThrow()
+    expect(() => decodeAtlas(tinyAtlas().subarray(0, 20), TINY)).toThrow()
+  })
+
+  test('every manifest entry decodes, with the clips the band plays', () => {
+    for (const kind of [...MONSTERS, ...BOSSES]) {
+      for (const clip of ['idle', 'run', 'attack', 'hit', 'death']) expect(ATLASES[kind.asset][clip], `${kind.asset} ${clip}`).toBeDefined()
     }
+    for (const id of BACKGROUNDS) expect(ATLASES[id].scene!.frames[0]).toMatchObject({ width: FRAME_WIDTH, height: FRAME_HEIGHT })
+  })
+})
+
+describe('frame buffer', () => {
+  test('a picture stamped past any edge is clipped, not an error', () => {
+    const f = newFrame()
+    const picture = ATLASES['hero-knight'].attack!.frames[0]!
+    for (const [x, y] of [[-30, -30], [FRAME_WIDTH - 5, FRAME_HEIGHT - 5], [-1000, 0], [0, 1000]] as const) blit(f, picture, x, y)
+    expect(f.rgba).toHaveLength(FRAME_WIDTH * FRAME_HEIGHT * 4)
+    expect(pixel(f, 0, 0)[3]).toBe(255)
+  })
+
+  test('only solid pixels are stamped', () => {
+    const f = newFrame(4, 4)
+    blit(f, decodeAtlas(tinyAtlas(), TINY).idle!.frames[0]!, 0, 0)
+    expect(pixel(f, 0, 0)).toEqual([0, 0, 0, 0])
+    expect(pixel(f, 1, 0)).toEqual([255, 0, 0, 255])
+  })
+
+  test('a scrolled backdrop wraps round', () => {
+    const picture = { width: 4, height: 1, rgba: new Uint8Array([1, 0, 0, 255, 2, 0, 0, 255, 3, 0, 0, 255, 4, 0, 0, 255]) }
+    const f = newFrame(4, 1)
+    backdrop(f, picture, 1)
+    expect([0, 1, 2, 3].map(x => pixel(f, x, 0)[0])).toEqual([2, 3, 4, 1])
+  })
+})
+
+describe('battle scene', () => {
+  test('every frame is the same size whatever the party, and the same input paints the same frame', () => {
+    let g = { ...newGame(5), gold: 10_000 }
+    for (const cls of [null, 'mage', 'ranger'] as const) {
+      if (cls !== null) g = recruit(g, cls).state
+      const frame = stillScene(g, ATLASES)
+      expect([frame.width, frame.height], `${g.heroes.length} heroes`).toEqual([FRAME_WIDTH, FRAME_HEIGHT])
+      expect(frame.rgba).toHaveLength(FRAME_WIDTH * FRAME_HEIGHT * 4)
+      expect(Array.from(stillScene(g, ATLASES).rgba)).toEqual(Array.from(frame.rgba))
+    }
+  })
+
+  test('a fight animates: frames change as the game steps', () => {
+    let g = party(newGame(5))
+    let a = newAnim()
+    const looks = new Set<string>()
+    for (let f = 0; f < 200; f += 1) {
+      if (f % 15 === 14) g = step(g)
+      a = tick(observe(a, g))
+      const frame = compose(g, a, ATLASES)
+      expect(frame.rgba).toHaveLength(FRAME_WIDTH * FRAME_HEIGHT * 4)
+      looks.add(Array.from(frame.rgba.subarray(0, FRAME_WIDTH * FRAME_HEIGHT * 4)).join(','))
+    }
+    expect(looks.size).toBeGreaterThan(20)
+  })
+
+  test('the background follows the stage through five backdrops', () => {
+    const g = newGame(3)
+    const looks = [1, 2, 3, 4, 5, 6].map(stage => Array.from(stillScene({ ...g, stage }, ATLASES).rgba.subarray(0, 64)).join())
+    expect(new Set(looks.slice(0, 5)).size).toBe(5)
+    expect(looks[5]).toBe(looks[0])
+  })
+
+  test('a volley swings, casts and shoots, and a kill plays a death then a walk-in', () => {
+    const g = party(newGame(5))
+    let a = settled(g)
+    const struck = { ...g, seed: g.seed + 1, monster: { ...g.monster, hp: g.monster.hp - 5 } }
+    a = observe(a, struck)
+    expect(a.volleyAt).toBe(a.t)
+    expect(a.numbers.at(-1)).toMatchObject({ value: 5 })
+    const killed = { ...struck, stats: { ...struck.stats, kills: struck.stats.kills + 1 } }
+    a = observe(tick(a), killed)
+    expect(a.dying?.monster.name).toBe(g.monster.name)
+    expect(a.enterAt).toBeGreaterThan(a.dying!.at)
   })
 
   test('a save from the older, longer monster lists loads and draws', () => {
@@ -540,71 +657,130 @@ describe('pixel art', () => {
       const old = { ...g, monster: { ...g.monster, name: 'Slime Bug', tier, sprite } }
       const loaded = parseSave(JSON.parse(JSON.stringify(old)))
       expect(loaded?.monster.sprite, `${tier} ${sprite}`).toBe(sprite)
-      const kinds = tier === 'boss' ? BOSSES : MONSTERS
-      expect(kinds).toContain(monsterKind(loaded!.monster))
-      expect(pixelScene(loaded!).cells.length).toBeGreaterThan(0)
+      expect(tier === 'boss' ? BOSSES : MONSTERS).toContain(monsterKind(loaded!.monster))
+      expect(stillScene(loaded!, ATLASES).rgba).toHaveLength(FRAME_WIDTH * FRAME_HEIGHT * 4)
     }
-  })
-
-  test('every frame of a fight keeps one size, so frames can repaint in place', () => {
-    let g = { ...newGame(5), gold: 10_000 }
-    g = recruit(g, 'mage').state
-    g = recruit(g, 'ranger').state
-    let a = newAnim()
-    const sizes = new Set<string>()
-    const looks = new Set<string>()
-    for (let f = 0; f < 200; f += 1) {
-      if (f % 15 === 14) g = step(g)
-      a = tick(observe(a, g))
-      const scene = compose(g, a)
-      sizes.add(`${scene.columns}x${scene.rows}`)
-      looks.add(scene.cells)
-    }
-    expect(sizes.size).toBe(1)
-    expect(looks.size).toBeGreaterThan(20)
-  })
-
-  test('a volley swings, casts and shoots, and a kill plays a death then a walk-in', () => {
-    let g = { ...newGame(5), gold: 10_000 }
-    g = recruit(g, 'mage').state
-    let a = tick(observe(newAnim(), g))
-    for (let f = 0; f < 20; f += 1) a = tick(observe(a, g))
-    const struck = { ...g, seed: g.seed + 1, monster: { ...g.monster, hp: g.monster.hp - 5 } }
-    a = observe(a, struck)
-    expect(a.volleyAt).toBe(a.t)
-    expect(a.numbers.at(-1)?.value).toBe(5)
-    const killed = { ...struck, stats: { ...struck.stats, kills: struck.stats.kills + 1 } }
-    a = observe(tick(a), killed)
-    expect(a.dying?.monster.name).toBe(g.monster.name)
-    expect(a.enterAt).toBeGreaterThan(a.t)
-  })
-
-  test('a full party against a boss fits in 90 columns', () => {
-    let g = { ...newGame(3), gold: 10_000 }
-    g = recruit(g, 'mage').state
-    g = recruit(g, 'ranger').state
-    g = { ...g, monster: { ...g.monster, tier: 'boss', sprite: 0 } }
-    const scene = pixelScene(g)
-    expect(scene.columns).toBeLessThanOrEqual(90)
-    const cells = decodeCells(scene)
-    expect(cells).toHaveLength(scene.rows)
-    expect(cells[0]).toHaveLength(scene.columns)
-    expect(cells.flat().every(c => [' ', '▀', '▄'].includes(c.ch))).toBe(true)
   })
 
   test('a fallen hero is drawn in gray', () => {
     const g = newGame(3)
-    // The lone hero's columns, every cell row but the HP bars at the bottom.
-    const heroPixels = (state: GameState) =>
-      decodeCells(pixelScene(state))
-        .slice(0, -1)
-        .flatMap(row => row.slice(0, 12))
-        .flatMap(c => [c.fg, c.bg])
-        .filter((c): c is number => c !== null)
-    const isGray = (c: number) => ((c >> 16) & 255) === ((c >> 8) & 255) && ((c >> 8) & 255) === (c & 255)
-    expect(heroPixels(g).every(isGray)).toBe(false)
+    const isGray = (p: number[]) => p[0] === p[1] && p[1] === p[2]
+    // The lone hero stands at x 140 on the ground; look at a column through its body.
+    const body = (state: GameState) => Array.from({ length: 30 }, (_, k) => pixel(stillScene(state, ATLASES), 140, 70 - k))
+    expect(body(g).every(isGray)).toBe(false)
     const down = { ...g, resting: 2, heroes: g.heroes.map(h => ({ ...h, hp: 0 })) }
-    expect(heroPixels(down).length).toBeGreaterThan(0)
-    expect(heroPixels(down).every(isGray)).toBe(true)
+    expect(body(down).some(isGray)).toBe(true)
+  })
+})
+
+describe('battle events', () => {
+  test('a crit is damage beyond whole plain volleys', () => {
+    expect(hasCrit(30, [10, 20], false)).toBe(false)
+    expect(hasCrit(40, [10, 20], false)).toBe(true)
+    expect(hasCrit(60, [10, 20], true)).toBe(false)
+    expect(hasCrit(60, [10, 20], false)).toBe(true)
+    expect(hasCrit(0, [10], false)).toBe(false)
+  })
+
+  test('a volley dealing more than the party\'s plain attack is a crit, shown big and gold', () => {
+    const g = newGame(3)
+    const atk = heroStats(g.heroes[0]!).atk
+    const a = observe(settled(g), { ...g, seed: g.seed + 1, monster: { ...g.monster, hp: g.monster.hp - atk * 2 } })
+    expect(a.crit).toBe(true)
+    expect(a.numbers.at(-1)?.kind).toBe('crit')
+    const plain = observe(settled(g), { ...g, seed: g.seed + 1, monster: { ...g.monster, hp: g.monster.hp - atk } })
+    expect(plain.crit).toBe(false)
+  })
+
+  test('a volley stoneskin blocks shows a gray 0', () => {
+    const g = { ...newGame(3), effects: [{ kind: 'stoneskin' as const, steps: 0, charges: 2 }] }
+    const a = observe(settled(g), { ...g, seed: g.seed + 1, effects: [{ kind: 'stoneskin' as const, steps: 0, charges: 1 }] })
+    expect(a.blocked).toBe(true)
+    expect(a.numbers.at(-1)).toMatchObject({ value: 0, kind: 'blocked' })
+  })
+
+  test('a heal beyond regeneration marks the side that healed', () => {
+    const g = newGame(3)
+    const hurt = { ...g, heroes: g.heroes.map(h => ({ ...h, hp: 10 })) }
+    const a = observe(settled(hurt), { ...hurt, heroes: hurt.heroes.map(h => ({ ...h, hp: 60 })) })
+    expect(a.healAt.heroes).toBe(a.t)
+    const wounded = { ...g, monster: { ...g.monster, hp: 5 } }
+    const b = observe(settled(wounded), { ...wounded, monster: { ...wounded.monster, hp: 15 } })
+    expect(b.healAt.monster).toBe(b.t)
+    const regen = observe(settled(hurt), { ...hurt, heroes: hurt.heroes.map(h => ({ ...h, hp: 11 })) })
+    expect(regen.healAt.heroes).toBeNull()
+  })
+
+  test('a hero falling is marked, and a milestone shield takes the counterattack', () => {
+    const g = newGame(3)
+    const a = observe(settled(g), { ...g, heroes: g.heroes.map(h => ({ ...h, hp: 0 })) })
+    expect(a.downAt[0]).toBe(a.t)
+    const shielded = { ...g, effects: [{ kind: 'milestone' as const, steps: 0, charges: 1 }] }
+    const b = observe(settled(shielded), { ...shielded, seed: g.seed + 1, effects: [] })
+    expect(b.counterAt).toBe(b.t)
+    expect(b.hitHero).toBeNull()
+  })
+})
+
+describe('effects on the scene', () => {
+  const HEROES: [number, number] = [0, 200]
+  const MONSTER: [number, number] = [240, FRAME_WIDTH]
+
+  for (const [kind, [from, to]] of [
+    ['rally', HEROES],
+    ['trust', HEROES],
+    ['milestone', HEROES],
+    ['enrage', MONSTER],
+    ['stoneskin', MONSTER],
+  ] as const) {
+    test(`${kind} changes how its side looks`, () => {
+      const g = party(newGame(5))
+      const plain = stillScene(g, ATLASES)
+      const buffed = stillScene({ ...g, effects: [{ kind, steps: 10, charges: 1 }] }, ATLASES)
+      expect(differsIn(plain, buffed, from, to)).toBe(true)
+    })
+  }
+
+  for (const [kind, side, [from, to]] of [
+    ['secondWind', 'heroes', HEROES],
+    ['calm', 'heroes', HEROES],
+    ['regen', 'monster', MONSTER],
+  ] as const) {
+    test(`${kind} sends up green sparks over the ${side}`, () => {
+      const g = party(newGame(5))
+      const before = side === 'heroes' ? { ...g, heroes: g.heroes.map(h => ({ ...h, hp: 10 })) } : { ...g, monster: { ...g.monster, hp: 5 } }
+      const healed = applyAction(before, kind === 'secondWind' ? 'turnDone' : kind === 'calm' ? 'compact' : 'bashFailed')
+      const a = settled(before)
+      const plain = compose(healed, tick(a), ATLASES)
+      const sparked = compose(healed, tick(observe(a, healed)), ATLASES)
+      expect(differsIn(plain, sparked, from, to)).toBe(true)
+    })
+  }
+
+  test('a crit flashes the whole frame', () => {
+    const g = newGame(3)
+    const atk = heroStats(g.heroes[0]!).atk
+    let a = observe(settled(g), { ...g, seed: g.seed + 1, monster: { ...g.monster, hp: g.monster.hp - atk * 2 } })
+    const struck = { ...g, seed: g.seed + 1, monster: { ...g.monster, hp: g.monster.hp - atk * 2 } }
+    const at = a.numbers.at(-1)!.at
+    while (a.t < at) a = tick(a)
+    const flash = compose(struck, a, ATLASES)
+    const after = compose(struck, tick(a), ATLASES)
+    expect(pixel(flash, 2, 2)[0]!).toBeGreaterThan(pixel(after, 2, 2)[0]!)
+  })
+
+  test('a resting party gets a zZz', () => {
+    const g = newGame(3)
+    const down = { ...g, heroes: g.heroes.map(h => ({ ...h, hp: 0 })) }
+    const asleep = { ...down, resting: 2 }
+    expect(differsIn(compose(down, stillAnim(down), ATLASES), compose(asleep, stillAnim(asleep), ATLASES), 100, 200)).toBe(true)
+  })
+
+  test('elite and rare monsters wear a colored outline', () => {
+    const g = newGame(3)
+    const normal = stillScene({ ...g, monster: { ...g.monster, tier: 'normal' } }, ATLASES)
+    for (const tier of ['elite', 'rare'] as const) {
+      expect(differsIn(normal, stillScene({ ...g, monster: { ...g.monster, tier } }, ATLASES), ...MONSTER), tier).toBe(true)
+    }
   })
 })

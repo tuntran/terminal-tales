@@ -7,7 +7,10 @@ import type { DaemonAction } from '../daemon/protocol'
 import { isFailedRun, isGitCommit, isPassingRun, isRejectedCall, isTestCommand } from '../src/game/test-command'
 import { endSync, startSync, submit, type Host } from '../src/sync/client'
 import { FRAME_MS, type Anim, compose, newAnim, observe, tick } from '../src/ui/animation'
-import { band, fitsPixels } from '../src/ui/band'
+import { type Atlases, loadAtlases } from '../src/ui/atlas'
+import { band, fitsScene } from '../src/ui/band'
+import { toBase64 } from '../src/ui/base64'
+import { FRAME_HEIGHT, FRAME_WIDTH } from '../src/ui/frame-buffer'
 import { heroPane } from '../src/ui/hero-pane'
 
 export { MIGRATED_KEY, SAVE_KEY, SAVE_MS, STEP_MS, UNREADABLE_KEY } from '../src/sync/client'
@@ -29,10 +32,15 @@ const syncMode = atom({ plugin: 'terminal-tales', key: 'syncMode' } as const, 's
 // same copy replaces them rather than doubling the pace.
 let timers: Timer[] = []
 
-// The band's animation and where its pixel scene is mounted. Both are only
-// for drawing: a reload starts them over with a walk-in, nothing is lost.
+// The band's animation, where its picture is mounted and what it last showed
+// there. All only for drawing: a reload starts them over with a walk-in.
 let anim: Anim = newAnim()
-let bandSite: { requestId: string; columns: number; rows: number } | null = null
+let bandSite: { requestId: string } | null = null
+let shownSource: string | null = null
+
+// The sprite sheets and backgrounds, read once per copy of the module; or why they could not be.
+let atlases: Atlases | null = null
+let atlasError: string | null = null
 
 // Calls the engine's own check put to the mode's decider, by tool_use_id: the
 // dialog asks the user, but auto mode's classifier answers some without one.
@@ -84,21 +92,30 @@ function hero($: EngineInterface, op: DaemonAction & { kind: 'hero' }): void {
   void submit(host($), op)
 }
 
-/** One animation frame: follow the game, then repaint the mounted scene in place. */
+async function loadArt($: EngineInterface): Promise<void> {
+  if (atlases !== null) return
+  try {
+    atlases = await loadAtlases(path => $.fs.read(path, { as: 'bytes' }), $.plugin.root)
+    atlasError = null
+  } catch (err) {
+    atlasError = `Terminal Tales: không đọc được hình (${err instanceof Error ? err.message : String(err)})`
+    $.ui.toast(atlasError)
+  }
+}
+
+/** One animation frame: follow the game, then swap the mounted picture when it changed. */
 async function animate($: EngineInterface): Promise<void> {
   const g = await read($, game)
   if (g === null) return
   anim = tick(observe(anim, g))
   const site = bandSite
-  if (site === null) return
-  const scene = compose(g, anim)
-  if (scene.columns !== site.columns || scene.rows !== site.rows) {
-    // The party changed size: the band draws a new Raster.
-    $.ui.invalidate('ui.render')
-    return
-  }
-  const result = await $.ui.blit({ requestId: site.requestId, key: 'scene', cells: scene.cells })
+  if (site === null || atlases === null) return
+  const rgba = toBase64(compose(g, anim, atlases).rgba)
+  if (rgba === shownSource) return
+  const result = await $.ui.blit({ requestId: site.requestId, key: 'scene', source: { rgba, width: FRAME_WIDTH, height: FRAME_HEIGHT } })
+  // Denied: unmounted, or a terminal drawing the alt in its place. Wait for the next render.
   if (result.deny !== undefined) bandSite = null
+  else shownSource = rgba
 }
 
 export const register: Register = on => {
@@ -108,6 +125,7 @@ export const register: Register = on => {
       description: 'Terminal Tales: xem đội hình, trang bị và nâng cấp',
     })
     for (const timer of timers) timer.cancel()
+    await loadArt($)
     timers = [$.clock.every(FRAME_MS, () => void animate($))]
     startSync(host($))
     return next(e)
@@ -202,15 +220,14 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const g = await read($, game)
     if (e.props.hasSurvey || g === null) return next(e)
-    const raster = e.surface === 'terminal' ? $.ui.resolve(e).Raster : undefined
-    const scene = compose(g, anim)
+    const image = e.surface === 'terminal' ? $.ui.resolve(e).Image : undefined
+    const scene = atlases === null || image === undefined ? null : toBase64(compose(g, anim, atlases).rgba)
     const columns = e.props.bodyColumns
     const rows = e.props.maxRows
-    bandSite =
-      raster !== undefined && fitsPixels(scene, columns, rows)
-        ? { requestId: e.requestId, columns: scene.columns, rows: scene.rows }
-        : null
-    return band({ kit: $.ui.resolve(e), raster, scene, game: g, columns, rows })
+    const isShown = image !== undefined && scene !== null && fitsScene(columns, rows)
+    bandSite = isShown ? { requestId: e.requestId } : null
+    shownSource = isShown ? scene : null
+    return band({ kit: $.ui.resolve(e), image, scene, error: atlasError, game: g, columns, rows })
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

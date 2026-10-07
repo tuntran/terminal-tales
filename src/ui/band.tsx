@@ -3,127 +3,79 @@ import type { Elements, RenderElement } from 'claude-code'
 import type { GameState } from '../../types'
 
 import { KILLS_PER_STAGE, TIERS } from '../game/catalog'
-import { heroStats } from '../game/engine'
-import { CLASS_COLOR, bar, effectsOf, formatNumber, heroSprite, monsterSprite, pad, summaryLine } from './art'
-import type { PixelScene } from './pixel-art'
+import { effectsOf, formatNumber, summaryLine } from './art'
+import { FRAME_HEIGHT, FRAME_WIDTH } from './frame-buffer'
 
 export type Kit = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>
-/** The terminal's cell grid; absent on surfaces that have none, which draw ASCII. */
-export type RasterKit = Elements['terminal']['Raster'] | undefined
+/** The terminal's picture element; absent on surfaces that have none, which show an error line. */
+export type ImageKit = Elements['terminal']['Image'] | undefined
 
-/** Columns the info column beside the pixel scene needs. */
+/**
+ * The cells the scene's picture fills. FRAME_WIDTH × FRAME_HEIGHT pixels over
+ * 69 × 8 cells keeps a pixel square on a terminal whose cells are twice as
+ * tall as wide.
+ */
+export const SCENE_COLUMNS = 69
+export const SCENE_ROWS = 8
+/** Columns the info column beside the scene needs. */
 const INFO_COLUMNS = 34
 
-const HERO_WIDTH = 6
-const MONSTER_WIDTH = 8
-const SCENE_ROWS = 4
-/** Narrower than this, the band falls back to one summary line. */
-const MIN_SCENE_COLUMNS = 46
-/** Wider than this, the info column sits beside the scene; narrower, one info row goes under it. */
-const MIN_INFO_COLUMNS = 72
+/** What the band says where it cannot show a picture: on a surface without one, or as its alt. */
+export const NO_PICTURES = 'Terminal Tales cần terminal hỗ trợ kitty graphics (kitty, Ghostty, Orca…)'
+export const TOO_SMALL = `Terminal Tales cần dải rộng ít nhất ${SCENE_COLUMNS} cột và cao ${SCENE_ROWS} dòng`
+const LOADING = 'Terminal Tales: đang tải hình…'
 
-/** True when the band has room for the pixel scene and a line of text under it. */
-export function fitsPixels(scene: PixelScene, columns: number, rows: number): boolean {
-  return columns >= scene.columns && rows > scene.rows
+/** True when the band has room for the whole scene. */
+export function fitsScene(columns: number, rows: number): boolean {
+  return columns >= SCENE_COLUMNS && rows >= SCENE_ROWS
 }
 
 export function band(props: {
   kit: Kit
-  raster: RasterKit
-  scene: PixelScene
+  image: ImageKit
+  /** The scene's current frame, RGBA base64; null while it cannot be painted. */
+  scene: string | null
+  /** Why the scene cannot be painted, when it cannot. */
+  error: string | null
   game: GameState
   columns: number
   rows: number
 }): RenderElement {
-  const { kit, raster: Raster, scene: pixels, game, columns, rows } = props
+  const { kit, image: Image, scene, error, game, columns, rows } = props
   const { Box, Text } = kit
 
-  if (Raster !== undefined && fitsPixels(pixels, columns, rows)) {
-    const picture = <Raster key="scene" columns={pixels.columns} rows={pixels.rows} cells={pixels.cells} />
-    if (columns >= pixels.columns + INFO_COLUMNS) {
-      return (
-        <Box flexDirection="row">
-          {picture}
-          <Box flexDirection="column" marginLeft={2} flexShrink={1}>
-            {infoLines(kit, game, pixels.rows - 4)}
-          </Box>
-        </Box>
-      )
-    }
+  const problem = Image === undefined ? NO_PICTURES : (error ?? (fitsScene(columns, rows) ? null : TOO_SMALL))
+  if (Image === undefined || problem !== null || scene === null) {
     return (
-      <Box flexDirection="column">
-        {picture}
+      <Box>
         <Text color="yellow" wrap="truncate-end">
-          {summaryLine(game)}
+          {problem ?? LOADING}
         </Text>
       </Box>
     )
   }
 
-  if (columns < MIN_SCENE_COLUMNS || rows < SCENE_ROWS + 1) {
-    return (
-      <Box>
-        <Text wrap="truncate-end">{summaryLine(game)}</Text>
-      </Box>
-    )
-  }
-
-  const monster = game.monster
-  const tier = TIERS[monster.tier]
-  const mSprite = monsterSprite(monster)
-  const heroRows = game.heroes.map(hero => {
-    const sprite = heroSprite(hero, game.frame)
-    // Heroes stand on the same ground as the taller monster.
-    return [...Array<string>(SCENE_ROWS - sprite.length).fill(''), ...sprite]
-  })
-  const gap = game.resting > 0 ? ' zZz ' : game.frame === 1 ? ' -=> ' : '  -> '
-
-  const scene = (
-    <Box flexDirection="column">
-      {Array.from({ length: SCENE_ROWS }, (_, row) => (
-        <Box flexDirection="row">
-          {game.heroes.map((hero, i) => (
-            <Text color={hero.hp > 0 ? CLASS_COLOR[hero.cls] : 'gray'}>{pad(heroRows[i]?.[row] ?? '', HERO_WIDTH)}</Text>
-          ))}
-          <Text dimColor>{row === SCENE_ROWS - 2 ? gap : '     '}</Text>
-          <Text color={tier.color} bold={monster.tier === 'boss'}>
-            {pad(mSprite[row] ?? '', MONSTER_WIDTH)}
-          </Text>
-        </Box>
-      ))}
-      <Box flexDirection="row">
-        {game.heroes.map(hero => (
-          <Text color="green">{pad(bar(hero.hp, heroStats(hero).maxHp, HERO_WIDTH - 1), HERO_WIDTH)}</Text>
-        ))}
-        <Text>{'     '}</Text>
-        <Text color="red">{bar(monster.hp, monster.maxHp, MONSTER_WIDTH - 1)}</Text>
-      </Box>
-    </Box>
+  const picture = (
+    <Image key="scene" source={{ rgba: scene, width: FRAME_WIDTH, height: FRAME_HEIGHT }} columns={SCENE_COLUMNS} rows={SCENE_ROWS} alt={NO_PICTURES} />
   )
-
-  const info = infoLines(kit, game)
-
-  if (columns < MIN_INFO_COLUMNS) {
-    const effects = effectsRow(kit, game)
+  if (columns >= SCENE_COLUMNS + INFO_COLUMNS) {
     return (
-      <Box flexDirection="column">
-        {scene}
-        {rows > SCENE_ROWS + 1 && (
-          <Text color="yellow" wrap="truncate-end">
-            {summaryLine(game)}
-          </Text>
-        )}
-        {rows > SCENE_ROWS + 2 && effects}
+      <Box flexDirection="row">
+        {picture}
+        <Box flexDirection="column" marginLeft={2} flexShrink={1}>
+          {infoLines(kit, game, SCENE_ROWS - 4)}
+        </Box>
       </Box>
     )
   }
-
   return (
-    <Box flexDirection="row">
-      {scene}
-      <Box flexDirection="column" marginLeft={2} flexShrink={1}>
-        {info}
-      </Box>
+    <Box flexDirection="column">
+      {picture}
+      {rows > SCENE_ROWS && (
+        <Text color="yellow" wrap="truncate-end">
+          {summaryLine(game)}
+        </Text>
+      )}
     </Box>
   )
 }
