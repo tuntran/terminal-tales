@@ -1,17 +1,13 @@
 # Terminal Tales
 
-Một game idle RPG sống ngay trong Claude Code. Một đội 1–3 anh hùng ASCII đánh quái
+Một game idle RPG sống ngay trong Claude Code. Một đội 1–3 anh hùng pixel đánh quái
 trên dải phía trên ô prompt trong lúc bạn code. Mỗi lần Claude gọi tool, đội nhận
 vàng và EXP; mỗi lần chạy test xanh, đội nhận thưởng lớn kèm một món đồ. Tiến trình
 được lưu lại giữa các session.
 
-```
-   o    ^           .--.    Terminal Tales · Ải 3 (4/10) · 1.240 vàng
-  /|\  (o)    -=>  (o  o)   Tinh Anh Slime Bug 52/183 HP
-  / \  /|\*         `--`    Thạch Sanh Lv7 · Mây Tím Lv4 · /hero
-█████ ████        ███░░░░   › Hạ Goblin Lint (+31 vàng, +37 EXP)
-                            › Nhặt được [Hiếm] Cung Tre
-```
+Trên terminal có truecolor, cảnh đánh nhau được vẽ bằng pixel (mỗi ô terminal là
+hai pixel xếp dọc) và cần khoảng 76–90 cột × 13 dòng. Khi terminal hẹp hoặc thấp
+hơn, và trên Claude Code Desktop, dải tự chuyển sang hình ASCII gọn hơn.
 
 ## Cách chơi
 
@@ -56,6 +52,15 @@ một dòng gõ tại prompt của Claude Code:
 
 Trả lời `y` để thêm marketplace, rồi chọn phạm vi (user).
 
+## Xem trước ngoài Claude Code
+
+```sh
+bun scripts/preview.tsx                 # dải chiến đấu và bảng /hero, có màu
+bun scripts/preview.tsx --watch         # dải chiến đấu chuyển động
+bun scripts/preview.tsx --html out.html # cùng nội dung dưới dạng trang web
+bun scripts/pixel-preview.ts --html out.html  # mọi quái và Boss ở dạng pixel
+```
+
 ## Phát triển
 
 ```sh
@@ -72,7 +77,8 @@ Cấu trúc:
 | `src/game/engine.ts` | Luật chơi thuần, tất định theo seed: chiến đấu, rơi đồ, lên cấp, hành động trong `/hero`, đọc save |
 | `src/game/catalog.ts` | Dữ liệu: lớp nhân vật, quái, độ hiếm, tên đồ, sprite ASCII, hằng số cân bằng |
 | `src/game/test-command.ts` | Nhận diện lệnh chạy test và kết quả xanh |
-| `src/ui/` | Dải phía trên prompt và bảng `/hero` |
+| `src/ui/` | Dải phía trên prompt (pixel trong `pixel-art.ts`, ASCII trong `art.ts`) và bảng `/hero` |
+| `scripts/` | Xem trước dải và bảng trong terminal hoặc trình duyệt |
 | `types/index.d.ts` | Kiểu dữ liệu game và hợp đồng `$.state` của plugin |
 | `tests/` | Test logic game và test tích hợp qua engine |
 

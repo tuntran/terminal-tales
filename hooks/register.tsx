@@ -174,7 +174,8 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const g = await read($, game)
     if (e.props.hasSurvey || g === null) return next(e)
-    return band({ kit: $.ui.resolve(e), game: g, columns: e.props.bodyColumns, rows: e.props.maxRows })
+    const raster = e.surface === 'terminal' ? $.ui.resolve(e).Raster : undefined
+    return band({ kit: $.ui.resolve(e), raster, game: g, columns: e.props.bodyColumns, rows: e.props.maxRows })
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

@@ -231,6 +231,51 @@ describe('band', () => {
   })
 })
 
+describe('pixel band', () => {
+  const props = (bodyColumns: number, maxRows: number) =>
+    ({
+      hasSurvey: false,
+      isWorking: false,
+      maxRows,
+      bodyColumns,
+      scroll: { top: 0, bodyRows: maxRows - 1, contentRows: 0 },
+      view: {},
+    }) as never
+
+  test('the terminal draws the fight as one pixel picture with the info beside it', async ($, on) => {
+    const w = world(on)
+    await start($)
+    const ui = await $.ui.mount({ plugin: 'terminal-tales', surface: 'terminal', component: 'AbovePrompt', props: props(140, 20) })
+    const picture = await ui.find({ type: 'Raster' })
+    expect(picture).toBeDefined()
+    const { columns, rows, cells } = picture!.props as { columns: number; rows: number; cells: string }
+    expect(columns).toBeLessThanOrEqual(140)
+    expect(cells.length).toBe(Math.ceil((columns * rows * 12) / 3) * 4)
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
+    expect(texts).toContain(w.game().monster.name)
+    await ui.unmount()
+  })
+
+  test('a narrower terminal puts one summary line under the picture', async ($, on) => {
+    const w = world(on)
+    await start($)
+    const ui = await $.ui.mount({ plugin: 'terminal-tales', surface: 'terminal', component: 'AbovePrompt', props: props(90, 20) })
+    expect(await ui.find({ type: 'Raster' })).toBeDefined()
+    expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join('')).toContain(w.game().heroes[0]!.name)
+    await ui.unmount()
+  })
+
+  test('a short band and the desktop fall back to ASCII', async ($, on) => {
+    world(on)
+    await start($)
+    for (const [surface, maxRows] of [['terminal', 8], ['desktop', 20]] as const) {
+      const ui = await $.ui.mount({ plugin: 'terminal-tales', surface, component: 'AbovePrompt', props: props(140, maxRows) })
+      expect(await ui.find({ type: 'Raster' }), `${surface} ${maxRows}`).toBeUndefined()
+      await ui.unmount()
+    }
+  })
+})
+
 describe('/hero pane', () => {
   function openPane($: Engine, surface: (typeof SURFACES)[number]) {
     return $.ui.mount({

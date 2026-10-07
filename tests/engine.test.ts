@@ -21,6 +21,8 @@ import {
 } from '../src/game/engine'
 import { isPassingRun, isTestCommand } from '../src/game/test-command'
 import { bar } from '../src/ui/art'
+import { BOSSES, MONSTERS } from '../src/game/catalog'
+import { PALETTE, PIXEL_BOSSES, PIXEL_HEROES, PIXEL_MONSTERS, decodeCells, pixelScene } from '../src/ui/pixel-art'
 
 function withItem(g: GameState, item: Partial<Item> = {}): GameState {
   const full: Item = { id: 'x1', name: 'Kiếm Thử', slot: 'weapon', rarity: 'rare', stage: 1, level: 0, ...item }
@@ -310,5 +312,51 @@ describe('test command detection', () => {
     expect(isPassingRun('===== 1 failed, 3 passed in 0.12s =====', false)).toBe(false)
     expect(isPassingRun('not ok 2 - adds', false)).toBe(false)
     expect(isPassingRun('anything', true)).toBe(false)
+  })
+})
+
+describe('pixel art', () => {
+  const all = [...Object.values(PIXEL_HEROES), ...PIXEL_MONSTERS, ...PIXEL_BOSSES]
+
+  test('every sprite uses only palette colors', () => {
+    for (const sprite of all) {
+      for (const row of sprite) {
+        for (const key of row) expect(key === '.' || key in PALETTE, `${key} in ${row}`).toBe(true)
+      }
+    }
+  })
+
+  test('there is a sprite for every monster and boss', () => {
+    expect(PIXEL_MONSTERS).toHaveLength(MONSTERS.length)
+    expect(PIXEL_BOSSES).toHaveLength(BOSSES.length)
+  })
+
+  test('a full party against a boss fits in 90 columns', () => {
+    let g = { ...newGame(3), gold: 10_000 }
+    g = recruit(g, 'mage').state
+    g = recruit(g, 'ranger').state
+    g = { ...g, monster: { ...g.monster, tier: 'boss', sprite: 0 } }
+    const scene = pixelScene(g)
+    expect(scene.columns).toBeLessThanOrEqual(90)
+    const cells = decodeCells(scene)
+    expect(cells).toHaveLength(scene.rows)
+    expect(cells[0]).toHaveLength(scene.columns)
+    expect(cells.flat().every(c => [' ', '▀', '▄'].includes(c.ch))).toBe(true)
+  })
+
+  test('a fallen hero is drawn in gray', () => {
+    const g = newGame(3)
+    // The lone hero's columns, every cell row but the HP bars at the bottom.
+    const heroPixels = (state: GameState) =>
+      decodeCells(pixelScene(state))
+        .slice(0, -1)
+        .flatMap(row => row.slice(0, 17))
+        .flatMap(c => [c.fg, c.bg])
+        .filter((c): c is number => c !== null)
+    const isGray = (c: number) => ((c >> 16) & 255) === ((c >> 8) & 255) && ((c >> 8) & 255) === (c & 255)
+    expect(heroPixels(g).every(isGray)).toBe(false)
+    const down = { ...g, resting: 2, heroes: g.heroes.map(h => ({ ...h, hp: 0 })) }
+    expect(heroPixels(down).length).toBeGreaterThan(0)
+    expect(heroPixels(down).every(isGray)).toBe(true)
   })
 })
