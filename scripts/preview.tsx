@@ -1,19 +1,22 @@
 // Draws the band and the /hero pane in a plain terminal, outside Claude Code,
 // from the plugin's own game logic and drawing code. The layout is a simple
-// stand-in for Claude Code's, close enough to judge the art.
+// stand-in for Claude Code's, close enough to judge the art. The scene is a
+// kitty graphics image, so run it in a terminal that shows them (kitty,
+// Ghostty, Orca).
 //
 //   bun scripts/preview.tsx            one frame of the band and the pane
 //   bun scripts/preview.tsx --watch    the band animating, as above the prompt
-//   bun scripts/preview.tsx --cols 60  the band at another width
+//   bun scripts/preview.tsx --cols 90  the band at another width
 //   bun scripts/preview.tsx --html out.html   the same frame as a page, colors kept
 
 import type { GameState } from '../types'
 
 import { applyAction, newGame, recruit, rewardTestPass, step } from '../src/game/engine'
-import { band } from '../src/ui/band'
+import { type Anim, FRAME_MS, compose, newAnim, observe, stillAnim, tick } from '../src/ui/animation'
+import { SCENE_COLUMNS, SCENE_ROWS, band } from '../src/ui/band'
+import { fromBase64, toBase64 } from '../src/ui/base64'
 import { heroPane } from '../src/ui/hero-pane'
-import { decodeCells } from '../src/ui/pixel-art'
-import { pixelScene } from '../src/ui/animation'
+import { kittyImage, loadArt, pngDataUrl } from './scene-output'
 
 type Node = { type: string; props: Record<string, unknown>; children: unknown[] }
 
@@ -24,8 +27,12 @@ type Node = { type: string; props: Record<string, unknown>; children: unknown[] 
 })
 
 const kit = { Box: 'Box', Text: 'Text', Button: 'Button' } as never
-const RASTER = 'Raster' as never
-const rgb = (c: number) => `${(c >> 16) & 255};${(c >> 8) & 255};${c & 255}`
+const IMAGE = 'Image' as never
+const atlases = await loadArt()
+/** True when pictures go to a page rather than the terminal. */
+let forHtml = false
+/** Pictures for the page, each in place of a marker in the text. */
+const pictures: string[] = []
 
 const COLORS: Record<string, number> = {
   red: 31, green: 32, yellow: 33, blue: 34, magenta: 35, cyan: 36, white: 37, gray: 90,
@@ -39,8 +46,9 @@ function style(text: string, props: Record<string, unknown>): string {
   return codes.length === 0 ? text : `\x1b[${codes.join(';')}m${text}\x1b[0m`
 }
 
+/** Color codes, kitty images and picture markers take no columns. */
 function width(line: string): number {
-  return Array.from(line.replace(/\x1b\[[\d;]*m/g, '')).length
+  return Array.from(line.replace(/\x1b\[[\d;]*m|\x1b_G[^\x1b]*\x1b\\|\u0000\d+\u0000/g, '')).length
 }
 
 function padRight(line: string, to: number): string {
@@ -59,16 +67,19 @@ function lines(child: unknown): string[] {
   if (child === null || child === undefined || child === false || child === true) return []
   if (typeof child === 'string' || typeof child === 'number') return [String(child)]
   const node = child as Node
-  if (node.type === 'Raster') {
-    const { columns, rows, cells } = node.props as { columns: number; rows: number; cells: string }
-    return decodeCells({ columns, rows, cells }).map(row =>
-      row
-        .map(c => {
-          const codes = [c.fg === null ? '' : `38;2;${rgb(c.fg)}`, c.bg === null ? '' : `48;2;${rgb(c.bg)}`].filter(Boolean)
-          return codes.length === 0 ? c.ch : `\x1b[${codes.join(';')}m${c.ch}\x1b[0m`
-        })
-        .join(''),
-    )
+  if (node.type === 'Image') {
+    // The picture sits at the top-left of its box of cells; blank cells hold its place.
+    const { columns, rows, source } = node.props as { columns: number; rows: number; source: { rgba: string; width: number; height: number } }
+    const frame = { width: source.width, height: source.height, rgba: fromBase64(source.rgba) }
+    const blank = ' '.repeat(columns)
+    let anchor: string
+    if (forHtml) {
+      pictures.push(pngDataUrl(frame))
+      anchor = `\u0000${pictures.length - 1}\u0000`
+    } else {
+      anchor = kittyImage(frame, columns, rows, 7)
+    }
+    return Array.from({ length: rows }, (_, i) => (i === 0 ? anchor + blank : blank))
   }
   if (node.type !== 'Box') return [inline(node)]
   const parts = node.children.map(lines).filter(part => part.length > 0)
@@ -112,8 +123,10 @@ function demoGame(): GameState {
   return g
 }
 
-function drawBand(g: GameState, cols: number, rows = 20, pixel = true): string {
-  return frame('phía trên prompt', lines(band({ kit, raster: pixel ? RASTER : undefined, scene: pixelScene(g), game: g, columns: cols, rows })), cols)
+function drawBand(g: GameState, cols: number, a: Anim = stillAnim(g), rows = 20, hasPictures = true): string {
+  const scene = toBase64(compose(g, a, atlases).rgba)
+  const title = hasPictures ? 'phía trên prompt' : 'phía trên prompt, không có ảnh'
+  return frame(title, lines(band({ kit, image: hasPictures ? IMAGE : undefined, scene, error: null, game: g, columns: cols, rows })), cols)
 }
 
 const CSS: Record<number, string> = {
@@ -124,7 +137,9 @@ const CSS: Record<number, string> = {
 /** Turns the ANSI colors this script prints into HTML spans. */
 function toHtml(text: string): string {
   const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  const body = escaped.replace(/\x1b\[([\d;]*)m/g, (_, codes: string) => {
+  const body = escaped.replace(/\u0000(\d+)\u0000/g, (_, i: string) =>
+    `<span style="position:relative"><img src="${pictures[Number(i)]}" style="position:absolute;left:0;top:0;width:${SCENE_COLUMNS}ch;height:${SCENE_ROWS * 1.35}em;image-rendering:pixelated"></span>`,
+  ).replace(/\x1b\[([\d;]*)m/g, (_, codes: string) => {
     if (codes === '0' || codes === '') return '</span>'
     const parts = codes.split(';').map(Number)
     const styles: string[] = []
@@ -146,23 +161,27 @@ const cols = colsAt >= 0 ? Number(args[colsAt + 1]) : Math.min(110, (process.std
 let game = demoGame()
 
 if (args.includes('--watch')) {
-  const draw = () => {
-    process.stdout.write('\x1b[2J\x1b[H')
-    console.log(drawBand(game, cols))
-    console.log('\nctrl+c để thoát')
-    game = step(game)
-  }
-  draw()
-  setInterval(draw, 1500)
+  let a = newAnim()
+  let frames = 0
+  process.stdout.write('\x1b[2J')
+  setInterval(() => {
+    // The game steps every 1.5 s, the animation every frame, as in the plugin.
+    if (++frames % 15 === 0) game = step(game)
+    a = tick(observe(a, game))
+    process.stdout.write(`\x1b[H${drawBand(game, cols, a)}\n\nctrl+c để thoát`)
+  }, FRAME_MS)
 } else {
   const noop = () => {}
   const actions = { select: noop, equip: noop, unequip: noop, upgrade: noop, sell: noop, recruit: noop }
+  const htmlAt = args.indexOf('--html')
+  forHtml = htmlAt >= 0
   const output = [
     drawBand(game, cols),
-    drawBand(game, 60, 8, false),
+    drawBand(game, 90),
+    drawBand(game, 60),
+    drawBand(game, cols, stillAnim(game), 20, false),
     frame('/hero', lines(heroPane({ kit, game, selected: 0, rows: 30, actions })), 80),
   ].join('\n\n')
-  const htmlAt = args.indexOf('--html')
-  if (htmlAt >= 0) await Bun.write(args[htmlAt + 1] ?? 'preview.html', toHtml(output))
+  if (forHtml) await Bun.write(args[htmlAt + 1] ?? 'preview.html', toHtml(output))
   else console.log(output)
 }

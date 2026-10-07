@@ -1,7 +1,7 @@
 {
   "name": "terminal-tales",
-  "version": "0.2.0",
-  "description": "Idle RPG above your prompt: a party of ASCII heroes earns gold and EXP from your coding activity.",
+  "version": "0.3.0",
+  "description": "Idle RPG above your prompt: a party of pixel-art heroes fights in an animated image while your coding activity earns them gold and EXP. Needs a terminal with kitty graphics.",
   "author": {
     "name": "TunTran"
   },

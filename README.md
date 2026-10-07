@@ -7,9 +7,14 @@ làm (gửi prompt, cho phép quyền, commit, bấm Esc…) buff đội hoặc 
 sổ Claude Code CLI trên một máy cùng xem một trận chung, và tiến trình được lưu lại
 giữa các session.
 
-Trên terminal có truecolor, cảnh đánh nhau được vẽ bằng pixel (mỗi ô terminal là
-hai pixel xếp dọc) và cần khoảng 70 cột × 9 dòng. Khi terminal hẹp hoặc thấp
-hơn, và trên Claude Code Desktop, dải tự chuyển sang hình ASCII gọn hơn.
+Cảnh đánh nhau là một ảnh pixel art chuyển động khoảng 10 khung mỗi giây: phông nền
+đổi theo ải, anh hùng và quái có đủ động tác đứng, đánh, trúng đòn, gục, cùng mũi
+tên, đạn phép, số damage và hình cho từng hiệu ứng.
+
+**Yêu cầu terminal:** cần terminal hiện được ảnh qua kitty graphics (kitty,
+Ghostty, Orca…) và dải rộng ít nhất 69 cột, cao 8 dòng. Không có fallback: terminal
+không hiện được ảnh, dải quá nhỏ, hoặc Claude Code Desktop chỉ hiện một dòng báo lỗi
+thay cho cảnh; game vẫn chạy bình thường và bảng `/hero` vẫn dùng được.
 
 ## Cách chơi
 
@@ -107,11 +112,11 @@ Trả lời `y` để thêm marketplace, rồi chọn phạm vi (user).
 ## Xem trước ngoài Claude Code
 
 ```sh
-bun scripts/preview.tsx                 # dải chiến đấu và bảng /hero, có màu
+bun scripts/preview.tsx                 # dải chiến đấu và bảng /hero (ảnh qua kitty graphics)
 bun scripts/preview.tsx --watch         # dải chiến đấu chuyển động
 bun scripts/preview.tsx --html out.html # cùng nội dung dưới dạng trang web
-bun scripts/pixel-preview.ts             # hoạt ảnh pixel ngay trong terminal
-bun scripts/pixel-preview.ts --html out.html  # hoạt ảnh pixel trong trình duyệt
+bun scripts/pixel-preview.ts             # chỉ cảnh chiến đấu, chuyển động ngay trong terminal
+bun scripts/pixel-preview.ts --html out.html  # cảnh chiến đấu chuyển động trong trình duyệt
 ```
 
 ## Phát triển
@@ -121,7 +126,9 @@ claude plugin validate .   # kiểm tra manifest và hooks module như engine s�
 claude plugin test .       # chạy tests/*.test.ts(x) trên engine thật
 npx -p typescript tsc -p . # type-check (sau lần nạp đầu, engine đặt types vào .claude-plugin/types/)
 
-bun install                # chỉ cần @types/bun cho phần daemon
+bun install                # @types/bun cho daemon, pngjs cho script build ảnh
+bun run build:assets       # đóng gói assets/source/ thành assets/build/*.bin và src/ui/atlas-manifest.ts
+bun run check:assets       # assets/build/ và manifest phải khớp bản build từ assets/source/
 bun test daemon            # test daemon (daemon/*.spec.ts)
 bun run build:daemon       # bundle daemon/ vào dist/ (chạy được bằng node hoặc bun)
 bun run check:daemon       # dist/ phải khớp đúng bản build từ daemon/; bắt buộc khi sửa daemon/
@@ -131,6 +138,12 @@ bash scripts/acceptance.sh [--sessions]  # nghiệm thu trên máy thật; --ses
 
 `dist/` được commit vì plugin chạy nó trực tiếp bằng `node` hoặc `bun`. Đừng sửa tay
 `dist/`: sửa `daemon/` rồi build lại, và `check:daemon` sẽ báo nếu hai bên lệch nhau.
+
+`assets/build/` cũng được commit: hook module không giải mã được PNG, nên
+`scripts/build-assets.ts` giải mã sẵn sprite sheet và phông nền thành bảng màu cộng
+chỉ số 8 bit, và plugin nạp chúng một lần mỗi session. Đổi ảnh hay cách cắt clip thì
+sửa `assets/source/` hoặc cấu hình trong script, chạy `build:assets`, rồi để
+`check:assets` xác nhận.
 
 Một daemon đang chạy chỉ nhường chỗ cho plugin có `version` mới hơn hẳn; hai bản build
 cùng `version` dùng chung daemon đang có, để chúng không tắt nhau qua lại. Khi sửa
@@ -146,14 +159,18 @@ Cấu trúc:
 | `daemon/` | Daemon: server trên Unix socket (`server.ts`), launcher tách tiến trình (`launch.ts`), giao thức dùng chung (`protocol.ts`) |
 | `dist/` | Bản bundle của `daemon/` mà plugin chạy |
 | `src/game/engine.ts` | Luật chơi thuần, tất định theo seed: chiến đấu, rơi đồ, lên cấp, hành động trong `/hero`, đọc save |
-| `src/game/catalog.ts` | Dữ liệu: lớp nhân vật, quái, độ hiếm, tên đồ, sprite ASCII, hằng số cân bằng |
+| `src/game/catalog.ts` | Dữ liệu: lớp nhân vật, quái và sprite sheet của từng loại, độ hiếm, tên đồ, hằng số cân bằng |
 | `src/game/test-command.ts` | Nhận diện lệnh chạy test, kết quả xanh, `git commit`, lệnh lỗi và lệnh bị từ chối |
-| `src/ui/` | Dải phía trên prompt (pixel trong `pixel-art.ts`, ASCII trong `art.ts`) và bảng `/hero` |
-| `scripts/` | Xem trước dải và bảng trong terminal hoặc trình duyệt; nghiệm thu daemon |
+| `src/ui/` | Dải phía trên prompt (diễn biến và vẽ khung trong `animation.ts`, nạp ảnh trong `atlas.ts`, phép vẽ RGBA trong `frame-buffer.ts`) và bảng `/hero` |
+| `assets/` | Ảnh nguồn (`source/`), bản đóng gói plugin nạp (`build/`) và [ghi công](assets/CREDITS.md) |
+| `scripts/` | Đóng gói ảnh; xem trước dải và bảng trong terminal hoặc trình duyệt; nghiệm thu daemon |
 | `types/index.d.ts` | Kiểu dữ liệu game và hợp đồng `$.state` của plugin |
 | `tests/` | Test logic game và test tích hợp qua engine, với một daemon giả trong bộ nhớ |
 
 ## Ghi chú
 
-Lấy cảm hứng từ thể loại idle RPG; mọi tên, hình và dữ liệu trong game là của riêng
-dự án. Mã nguồn mở theo giấy phép [MIT](LICENSE).
+Lấy cảm hứng từ thể loại idle RPG. Mã nguồn mở theo giấy phép [MIT](LICENSE).
+
+Ảnh nhân vật và phông nền đến từ các gói CC0 của LuizMelo và Luis Zuno (ansimuz), và
+các gói phông nền CC-BY 4.0 của Admurin. Danh sách đầy đủ và giấy phép từng gói nằm
+trong [assets/CREDITS.md](assets/CREDITS.md); khi phân phối lại plugin, giữ file này.
