@@ -1,8 +1,10 @@
-import type { GameState, Hero, HeroClass, Item, Monster, MonsterTier, Rarity, Slot } from '../../types'
+import type { Effect, EffectKind, GameAction, GameState, Hero, HeroClass, Item, Monster, MonsterTier, Rarity, Slot } from '../../types'
 
 import {
+  ACTION_EFFECT,
   BOSSES,
   CLASSES,
+  EFFECTS,
   ITEM_NAMES,
   KILLS_PER_STAGE,
   LOG_SIZE,
@@ -146,6 +148,7 @@ export function newGame(seed: number): GameState {
     frame: 0,
     log: [],
     stats: { kills: 0, toolCalls: 0, testPasses: 0, itemsFound: 0 },
+    effects: [],
   }
   g.heroes.push(makeHero(g, 'warrior'))
   g.monster = spawnMonster(g)
@@ -230,12 +233,47 @@ function killMonster(g: GameState): void {
   g.monster = spawnMonster(g)
 }
 
-/** The party strikes once; true when the monster fell. */
-function partyAttacks(g: GameState): boolean {
+// ---------- effects ----------
+
+function hasEffect(g: GameState, kind: EffectKind): boolean {
+  return g.effects.some(e => e.kind === kind)
+}
+
+/** Spends one charge of a shield; true when there was one to spend. */
+function useCharge(g: GameState, kind: EffectKind): boolean {
+  const effect = g.effects.find(e => e.kind === kind && e.charges > 0)
+  if (!effect) return false
+  g.effects = g.effects
+    .map(e => (e === effect ? { ...e, charges: e.charges - 1 } : e))
+    .filter(e => e.steps > 0 || e.charges > 0)
+  return true
+}
+
+/** Counts every timed effect down by one step and drops those that ran out. */
+function tickEffects(g: GameState): void {
+  g.effects = g.effects
+    .map(e => (e.steps > 0 ? { ...e, steps: e.steps - 1 } : e))
+    .filter(e => e.steps > 0 || e.charges > 0)
+}
+
+/** A hero's chance to crit in a combat step, with the party's buffs. */
+export function critChance(hero: Hero, g: GameState): number {
+  const { crit } = heroStats(hero)
+  return hasEffect(g, 'trust') ? Math.min(0.75, crit + EFFECTS.trust.power) : crit
+}
+
+// ---------- combat ----------
+
+/**
+ * The party strikes once; true when the monster fell. Only combat steps feel
+ * effects: the free strike of a tool call ignores them, so a burst of calls
+ * never burns a buff before the user can see it.
+ */
+function partyAttacks(g: GameState, withEffects: boolean): boolean {
   for (const hero of g.heroes) {
     if (hero.hp <= 0) continue
     const { atk, crit } = heroStats(hero)
-    const damage = rand(g) < crit ? atk * 2 : atk
+    const damage = rand(g) < (withEffects ? critChance(hero, g) : crit) ? atk * 2 : atk
     g.monster.hp = Math.max(0, g.monster.hp - damage)
     if (g.monster.hp === 0) {
       killMonster(g)
@@ -245,8 +283,7 @@ function partyAttacks(g: GameState): boolean {
   return false
 }
 
-/** One combat step: the party strikes, the monster answers, the frame flips. */
-export function step(state: GameState): GameState {
+function stepCombat(state: GameState): GameState {
   const g = clone(state)
   g.frame = g.frame === 0 ? 1 : 0
   if (g.resting > 0) {
@@ -257,11 +294,18 @@ export function step(state: GameState): GameState {
     }
     return g
   }
-  if (partyAttacks(g)) return g
+  // Stoneskin blocks the party's whole turn, rally's extra volley included.
+  if (!useCharge(g, 'stoneskin')) {
+    if (partyAttacks(g, true)) return g
+    if (hasEffect(g, 'rally') && rand(g) < EFFECTS.rally.power && partyAttacks(g, true)) return g
+  }
   const alive = g.heroes.filter(h => h.hp > 0)
   if (alive.length > 0) {
     const target = pick(g, alive)
-    target.hp = Math.max(0, target.hp - g.monster.atk)
+    if (!useCharge(g, 'milestone')) {
+      const atk = hasEffect(g, 'enrage') ? Math.round(g.monster.atk * (1 + EFFECTS.enrage.power)) : g.monster.atk
+      target.hp = Math.max(0, target.hp - atk)
+    }
   }
   for (const hero of g.heroes) {
     if (hero.hp > 0) hero.hp = Math.min(heroStats(hero).maxHp, hero.hp + Math.ceil(heroStats(hero).maxHp * 0.03))
@@ -274,6 +318,13 @@ export function step(state: GameState): GameState {
   return g
 }
 
+/** One combat step: the party strikes, the monster answers, the frame flips, effects count down. */
+export function step(state: GameState): GameState {
+  const g = stepCombat(state)
+  tickEffects(g)
+  return g
+}
+
 // ---------- coding activity ----------
 
 /** Any finished tool call: a little gold and EXP and one free strike. */
@@ -282,7 +333,31 @@ export function rewardToolCall(state: GameState): GameState {
   g.stats.toolCalls += 1
   g.gold += 1 + Math.floor(g.stage / 2)
   gainExp(g, 2 + g.stage)
-  if (g.resting === 0) partyAttacks(g)
+  if (g.resting === 0) partyAttacks(g, false)
+  return g
+}
+
+/**
+ * Something the user did: a good action buffs the party, a bad one the
+ * monster. An instant effect applies now; a lasting one replaces any of its
+ * kind at full length, so the same action refreshes rather than stacks.
+ */
+export function applyAction(state: GameState, action: GameAction): GameState {
+  const g = clone(state)
+  const kind = ACTION_EFFECT[action]
+  const info = EFFECTS[kind]
+  if (kind === 'secondWind' || kind === 'calm') {
+    for (const hero of g.heroes) {
+      if (hero.hp <= 0) continue
+      const max = heroStats(hero).maxHp
+      hero.hp = Math.min(max, hero.hp + Math.round(max * info.power))
+    }
+  } else if (kind === 'regen') {
+    g.monster.hp = Math.min(g.monster.maxHp, g.monster.hp + Math.round(g.monster.maxHp * info.power))
+  } else {
+    g.effects = [...g.effects.filter(e => e.kind !== kind), { kind, steps: info.steps, charges: info.charges }]
+  }
+  say(g, info.line)
   return g
 }
 
@@ -422,7 +497,26 @@ function isMonster(value: unknown): value is Monster {
   )
 }
 
-/** Reads a stored save, or null when it is missing or not one this version understands. */
+function isEffect(value: unknown): value is Effect {
+  if (typeof value !== 'object' || value === null) return false
+  const e = value as Partial<Effect>
+  return (
+    typeof e.kind === 'string' &&
+    Object.hasOwn(EFFECTS, e.kind) &&
+    typeof e.steps === 'number' &&
+    Number.isFinite(e.steps) &&
+    e.steps >= 0 &&
+    typeof e.charges === 'number' &&
+    Number.isFinite(e.charges) &&
+    e.charges >= 0
+  )
+}
+
+/**
+ * Reads a stored save, or null when it is missing or not one this version
+ * understands. Effects are short-lived, so a bad one is dropped rather than
+ * failing the whole save, and a save from before effects loads with none.
+ */
 export function parseSave(raw: unknown): GameState | null {
   if (typeof raw !== 'object' || raw === null) return null
   const g = raw as Partial<GameState>
@@ -450,7 +544,9 @@ export function parseSave(raw: unknown): GameState | null {
     Number.isFinite(stats.toolCalls) &&
     Number.isFinite(stats.testPasses) &&
     Number.isFinite(stats.itemsFound)
-  return isValid ? (raw as GameState) : null
+  if (!isValid) return null
+  const effects = Array.isArray(g.effects) ? g.effects.filter(isEffect) : []
+  return { ...(raw as GameState), effects }
 }
 
 /** True for a save written by a newer version of the game: never overwrite it. */

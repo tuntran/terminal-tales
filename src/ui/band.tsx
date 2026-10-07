@@ -4,9 +4,15 @@ import type { GameState } from '../../types'
 
 import { KILLS_PER_STAGE, TIERS } from '../game/catalog'
 import { heroStats } from '../game/engine'
-import { CLASS_COLOR, bar, formatNumber, heroSprite, monsterSprite, pad, summaryLine } from './art'
+import { CLASS_COLOR, bar, effectsOf, formatNumber, heroSprite, monsterSprite, pad, summaryLine } from './art'
+import type { PixelScene } from './pixel-art'
 
 export type Kit = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>
+/** The terminal's cell grid; absent on surfaces that have none, which draw ASCII. */
+export type RasterKit = Elements['terminal']['Raster'] | undefined
+
+/** Columns the info column beside the pixel scene needs. */
+const INFO_COLUMNS = 34
 
 const HERO_WIDTH = 6
 const MONSTER_WIDTH = 8
@@ -16,9 +22,43 @@ const MIN_SCENE_COLUMNS = 46
 /** Wider than this, the info column sits beside the scene; narrower, one info row goes under it. */
 const MIN_INFO_COLUMNS = 72
 
-export function band(props: { kit: Kit; game: GameState; columns: number; rows: number }): RenderElement {
-  const { kit, game, columns, rows } = props
+/** True when the band has room for the pixel scene and a line of text under it. */
+export function fitsPixels(scene: PixelScene, columns: number, rows: number): boolean {
+  return columns >= scene.columns && rows > scene.rows
+}
+
+export function band(props: {
+  kit: Kit
+  raster: RasterKit
+  scene: PixelScene
+  game: GameState
+  columns: number
+  rows: number
+}): RenderElement {
+  const { kit, raster: Raster, scene: pixels, game, columns, rows } = props
   const { Box, Text } = kit
+
+  if (Raster !== undefined && fitsPixels(pixels, columns, rows)) {
+    const picture = <Raster key="scene" columns={pixels.columns} rows={pixels.rows} cells={pixels.cells} />
+    if (columns >= pixels.columns + INFO_COLUMNS) {
+      return (
+        <Box flexDirection="row">
+          {picture}
+          <Box flexDirection="column" marginLeft={2} flexShrink={1}>
+            {infoLines(kit, game, pixels.rows - 4)}
+          </Box>
+        </Box>
+      )
+    }
+    return (
+      <Box flexDirection="column">
+        {picture}
+        <Text color="yellow" wrap="truncate-end">
+          {summaryLine(game)}
+        </Text>
+      </Box>
+    )
+  }
 
   if (columns < MIN_SCENE_COLUMNS || rows < SCENE_ROWS + 1) {
     return (
@@ -61,27 +101,10 @@ export function band(props: { kit: Kit; game: GameState; columns: number; rows: 
     </Box>
   )
 
-  const progress = monster.tier === 'boss' ? 'BOSS!' : `${game.stageKills}/${KILLS_PER_STAGE}`
-  const party = `${game.heroes.map(member => `${member.name} Lv${member.level}`).join(' · ')} · /hero`
-  const info = [
-    <Text bold color="yellow" wrap="truncate-end">
-      {`Terminal Tales · Ải ${game.stage} (${progress}) · ${formatNumber(game.gold)} vàng`}
-    </Text>,
-    <Text wrap="truncate-end">
-      <Text color={tier.color}>{`${tier.label} ${monster.name}`}</Text>
-      <Text dimColor>{` ${formatNumber(monster.hp)}/${formatNumber(monster.maxHp)} HP`}</Text>
-    </Text>,
-    <Text dimColor wrap="truncate-end">
-      {party}
-    </Text>,
-    ...game.log.slice(-2).map(line => (
-      <Text dimColor wrap="truncate-end">
-        {`› ${line}`}
-      </Text>
-    )),
-  ]
+  const info = infoLines(kit, game)
 
   if (columns < MIN_INFO_COLUMNS) {
+    const effects = effectsRow(kit, game)
     return (
       <Box flexDirection="column">
         {scene}
@@ -90,6 +113,7 @@ export function band(props: { kit: Kit; game: GameState; columns: number; rows: 
             {summaryLine(game)}
           </Text>
         )}
+        {rows > SCENE_ROWS + 2 && effects}
       </Box>
     )
   }
@@ -102,4 +126,51 @@ export function band(props: { kit: Kit; game: GameState; columns: number; rows: 
       </Box>
     </Box>
   )
+}
+
+/** The lasting effects of both sides, the party's in green and the monster's in red; null when none. */
+function effectsRow(kit: Kit, game: GameState): RenderElement | null {
+  const { Text } = kit
+  const heroes = effectsOf(game, 'heroes')
+  const monster = effectsOf(game, 'monster')
+  if (heroes === null && monster === null) return null
+  return (
+    <Text wrap="truncate-end">
+      {heroes !== null && <Text color="green">{`Đội ${heroes}`}</Text>}
+      {heroes !== null && monster !== null && <Text dimColor>{'  |  '}</Text>}
+      {monster !== null && <Text color="red">{`Quái ${monster}`}</Text>}
+    </Text>
+  )
+}
+
+function lastLines(log: readonly string[], count: number): readonly string[] {
+  return count > 0 ? log.slice(-count) : []
+}
+
+function infoLines(kit: Kit, game: GameState, logLines = 2): RenderElement[] {
+  const { Text } = kit
+  const effects = effectsRow(kit, game)
+  const monster = game.monster
+  const tier = TIERS[monster.tier]
+  const progress = monster.tier === 'boss' ? 'BOSS!' : `${game.stageKills}/${KILLS_PER_STAGE}`
+  const party = `${game.heroes.map(member => `${member.name} Lv${member.level}`).join(' · ')} · /hero`
+  return [
+    <Text bold color="yellow" wrap="truncate-end">
+      {`Terminal Tales · Ải ${game.stage} (${progress}) · ${formatNumber(game.gold)} vàng`}
+    </Text>,
+    <Text wrap="truncate-end">
+      <Text color={tier.color}>{`${tier.label} ${monster.name}`}</Text>
+      <Text dimColor>{` ${formatNumber(monster.hp)}/${formatNumber(monster.maxHp)} HP`}</Text>
+    </Text>,
+    <Text dimColor wrap="truncate-end">
+      {party}
+    </Text>,
+    // The effects row takes the place of the oldest log line, so the column keeps its height.
+    ...(effects === null ? [] : [effects]),
+    ...lastLines(game.log, effects === null ? logLines : logLines - 1).map(line => (
+      <Text dimColor wrap="truncate-end">
+        {`› ${line}`}
+      </Text>
+    )),
+  ]
 }

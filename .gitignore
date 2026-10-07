@@ -2,3 +2,6 @@
 .claude-plugin/types/
 node_modules/
 .DS_Store
+.daemon-check/
+# The daemon bundle ships with the plugin; check:daemon keeps it in step with daemon/
+!dist/

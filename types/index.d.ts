@@ -43,7 +43,29 @@ export type GameStats = {
   itemsFound: number
 }
 
-export type PendingRewards = { toolCalls: number; testPasses: number }
+/** Something the user did that buffs one side of the fight. */
+export type GameAction =
+  | 'prompt'
+  | 'turnDone'
+  | 'permissionAllowed'
+  | 'commit'
+  | 'compact'
+  | 'turnAborted'
+  | 'permissionDenied'
+  | 'bashFailed'
+
+export type EffectKind =
+  | 'rally'
+  | 'secondWind'
+  | 'trust'
+  | 'milestone'
+  | 'calm'
+  | 'enrage'
+  | 'stoneskin'
+  | 'regen'
+
+/** A lasting effect: `steps` counts down each combat step, `charges` each blocked volley or hit. */
+export type Effect = { kind: EffectKind; steps: number; charges: number }
 
 export type GameState = {
   version: 1
@@ -62,19 +84,24 @@ export type GameState = {
   frame: number
   log: string[]
   stats: GameStats
+  /** Lasting buffs from the user's actions; one of each kind at most. */
+  effects: Effect[]
 }
+
+export type SyncMode = 'starting' | 'daemon' | 'solo' | 'locked'
 
 declare module 'claude-code' {
   interface PluginState {
     'terminal-tales': {
       game: GameState | null
       selectedHero: number
-      /** The store revision this session's game builds on. */
-      baseRev: number
-      /** Activity rewards earned since the last save, replayed onto another session's newer save. */
-      pending: PendingRewards
-      /** True when the store holds a save from a newer version: this session never writes it. */
-      isSaveLocked: boolean
+      /**
+       * Where the game runs: `starting` until the daemon answers or is given up
+       * on, `daemon` while the shared fight shows, `solo` when this session
+       * runs its own and saves it in `$.store`, `locked` when the save comes
+       * from a newer version and this session plays a game it never writes.
+       */
+      syncMode: SyncMode
     }
   }
 }
