@@ -711,9 +711,22 @@ describe('battle events', () => {
     expect(regen.healAt.heroes).toBeNull()
   })
 
+  test('HP lost to a gear swap, outside a combat step, is no counterattack', () => {
+    const g = newGame(3)
+    const a = observe(settled(g), { ...g, heroes: g.heroes.map(h => ({ ...h, hp: h.hp - 5 })) })
+    expect(a.counterAt).toBeNull()
+  })
+
+  test('a free strike landing with a blocked step shows its damage, not a 0', () => {
+    const g = { ...newGame(3), effects: [{ kind: 'stoneskin' as const, steps: 0, charges: 2 }] }
+    const a = observe(settled(g), { ...g, seed: g.seed + 1, monster: { ...g.monster, hp: g.monster.hp - 7 }, effects: [{ kind: 'stoneskin' as const, steps: 0, charges: 1 }] })
+    expect(a.blocked).toBe(false)
+    expect(a.numbers.at(-1)?.value).toBe(7)
+  })
+
   test('a hero falling is marked, and a milestone shield takes the counterattack', () => {
     const g = newGame(3)
-    const a = observe(settled(g), { ...g, heroes: g.heroes.map(h => ({ ...h, hp: 0 })) })
+    const a = observe(settled(g), { ...g, seed: g.seed + 1, heroes: g.heroes.map(h => ({ ...h, hp: 0 })) })
     expect(a.downAt[0]).toBe(a.t)
     const shielded = { ...g, effects: [{ kind: 'milestone' as const, steps: 0, charges: 1 }] }
     const b = observe(settled(shielded), { ...shielded, seed: g.seed + 1, effects: [] })

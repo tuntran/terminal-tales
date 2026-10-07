@@ -159,7 +159,8 @@ export function observe(a: Anim, g: GameState): Anim {
   const stepped = g.seed !== prev.seed
   const isBlocked = stepped && (g.effects.find(e => e.kind === 'stoneskin')?.charges ?? 0) < (prev.charges.stoneskin ?? 0)
   const damage = prev.monster.hp - g.monster.hp
-  if (isBlocked) {
+  // A free strike from a tool call can land in the same read as a blocked step: the damage wins.
+  if (isBlocked && damage <= 0) {
     next.volleyAt = a.t
     next.crit = false
     next.blocked = true
@@ -172,6 +173,8 @@ export function observe(a: Anim, g: GameState): Anim {
     next.numbers = [...next.numbers, { value: damage, at: a.t + IMPACT, kind: crit ? 'crit' : 'hit' }]
   }
 
+  // Only a combat step counterattacks: gear swapped in /hero can lower HP too.
+  if (!stepped) return next
   const hit = g.heroes.findIndex((h, i) => h.hp < (prev.heroHp[i] ?? h.hp))
   const isShielded = (g.effects.find(e => e.kind === 'milestone')?.charges ?? 0) < (prev.charges.milestone ?? 0)
   if (hit >= 0 || isShielded) {

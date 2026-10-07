@@ -37,6 +37,8 @@ let timers: Timer[] = []
 let anim: Anim = newAnim()
 let bandSite: { requestId: string } | null = null
 let shownSource: string | null = null
+/** True while a blit is on its way, so a slow one is not overtaken by a second copy. */
+let isBlitting = false
 
 // The sprite sheets and backgrounds, read once per copy of the module; or why they could not be.
 let atlases: Atlases | null = null
@@ -109,13 +111,18 @@ async function animate($: EngineInterface): Promise<void> {
   if (g === null) return
   anim = tick(observe(anim, g))
   const site = bandSite
-  if (site === null || atlases === null) return
+  if (site === null || atlases === null || isBlitting) return
   const rgba = toBase64(compose(g, anim, atlases).rgba)
   if (rgba === shownSource) return
-  const result = await $.ui.blit({ requestId: site.requestId, key: 'scene', source: { rgba, width: FRAME_WIDTH, height: FRAME_HEIGHT } })
-  // Denied: unmounted, or a terminal drawing the alt in its place. Wait for the next render.
-  if (result.deny !== undefined) bandSite = null
-  else shownSource = rgba
+  isBlitting = true
+  try {
+    const result = await $.ui.blit({ requestId: site.requestId, key: 'scene', source: { rgba, width: FRAME_WIDTH, height: FRAME_HEIGHT } })
+    // Denied: unmounted, or a terminal drawing the alt in its place. Wait for the next render.
+    if (result.deny !== undefined) bandSite = null
+    else shownSource = rgba
+  } finally {
+    isBlitting = false
+  }
 }
 
 export const register: Register = on => {
