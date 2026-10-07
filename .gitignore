@@ -5,3 +5,5 @@ node_modules/
 .daemon-check/
 # The daemon bundle ships with the plugin; check:daemon keeps it in step with daemon/
 !dist/
+# Sprite and background art ships with the plugin; credits in assets/CREDITS.md
+!assets/
