@@ -22,7 +22,8 @@ import {
 import { isPassingRun, isTestCommand } from '../src/game/test-command'
 import { bar } from '../src/ui/art'
 import { BOSSES, MONSTERS } from '../src/game/catalog'
-import { PALETTE, PIXEL_BOSSES, PIXEL_HEROES, PIXEL_MONSTERS, decodeCells, pixelScene } from '../src/ui/pixel-art'
+import { PALETTE, PIXEL_BOSSES, PIXEL_HEROES, PIXEL_HERO_ATTACKS, PIXEL_HERO_STRIDES, PIXEL_MONSTERS, decodeCells } from '../src/ui/pixel-art'
+import { compose, newAnim, observe, pixelScene, tick } from '../src/ui/animation'
 
 function withItem(g: GameState, item: Partial<Item> = {}): GameState {
   const full: Item = { id: 'x1', name: 'Kiếm Thử', slot: 'weapon', rarity: 'rare', stage: 1, level: 0, ...item }
@@ -316,7 +317,13 @@ describe('test command detection', () => {
 })
 
 describe('pixel art', () => {
-  const all = [...Object.values(PIXEL_HEROES), ...PIXEL_MONSTERS, ...PIXEL_BOSSES]
+  const all = [
+    ...Object.values(PIXEL_HEROES),
+    ...Object.values(PIXEL_HERO_ATTACKS),
+    ...Object.values(PIXEL_HERO_STRIDES).flat(),
+    ...PIXEL_MONSTERS,
+    ...PIXEL_BOSSES,
+  ]
 
   test('every sprite uses only palette colors', () => {
     for (const sprite of all) {
@@ -329,6 +336,39 @@ describe('pixel art', () => {
   test('there is a sprite for every monster and boss', () => {
     expect(PIXEL_MONSTERS).toHaveLength(MONSTERS.length)
     expect(PIXEL_BOSSES).toHaveLength(BOSSES.length)
+  })
+
+  test('every frame of a fight keeps one size, so frames can repaint in place', () => {
+    let g = { ...newGame(5), gold: 10_000 }
+    g = recruit(g, 'mage').state
+    g = recruit(g, 'ranger').state
+    let a = newAnim()
+    const sizes = new Set<string>()
+    const looks = new Set<string>()
+    for (let f = 0; f < 200; f += 1) {
+      if (f % 15 === 14) g = step(g)
+      a = tick(observe(a, g))
+      const scene = compose(g, a)
+      sizes.add(`${scene.columns}x${scene.rows}`)
+      looks.add(scene.cells)
+    }
+    expect(sizes.size).toBe(1)
+    expect(looks.size).toBeGreaterThan(20)
+  })
+
+  test('a volley swings, casts and shoots, and a kill plays a death then a walk-in', () => {
+    let g = { ...newGame(5), gold: 10_000 }
+    g = recruit(g, 'mage').state
+    let a = tick(observe(newAnim(), g))
+    for (let f = 0; f < 20; f += 1) a = tick(observe(a, g))
+    const struck = { ...g, seed: g.seed + 1, monster: { ...g.monster, hp: g.monster.hp - 5 } }
+    a = observe(a, struck)
+    expect(a.volleyAt).toBe(a.t)
+    expect(a.numbers.at(-1)?.value).toBe(5)
+    const killed = { ...struck, stats: { ...struck.stats, kills: struck.stats.kills + 1 } }
+    a = observe(tick(a), killed)
+    expect(a.dying?.monster.name).toBe(g.monster.name)
+    expect(a.enterAt).toBeGreaterThan(a.t)
   })
 
   test('a full party against a boss fits in 90 columns', () => {
@@ -350,7 +390,7 @@ describe('pixel art', () => {
     const heroPixels = (state: GameState) =>
       decodeCells(pixelScene(state))
         .slice(0, -1)
-        .flatMap(row => row.slice(0, 17))
+        .flatMap(row => row.slice(0, 12))
         .flatMap(c => [c.fg, c.bg])
         .filter((c): c is number => c !== null)
     const isGray = (c: number) => ((c >> 16) & 255) === ((c >> 8) & 255) && ((c >> 8) & 255) === (c & 255)

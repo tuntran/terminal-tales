@@ -1,36 +1,39 @@
-// Shows the pixel band for every monster, as the terminal draws it.
+// Plays the band's pixel animation outside Claude Code, from the plugin's own
+// game logic, sprites and animation code.
 //
-//   bun scripts/pixel-preview.ts                 prints the scenes in a truecolor terminal
-//   bun scripts/pixel-preview.ts --html out.html writes the same as a page
+//   bun scripts/pixel-preview.ts                 plays it in this terminal (truecolor)
+//   bun scripts/pixel-preview.ts --html out.html writes a page that plays it
 
-import type { GameState, MonsterTier } from '../types'
+import type { GameState } from '../types'
 
-import { BOSSES, MONSTERS } from '../src/game/catalog'
-import { newGame, recruit } from '../src/game/engine'
-import { decodeCells, pixelScene } from '../src/ui/pixel-art'
+import { newGame, recruit, rewardToolCall, step } from '../src/game/engine'
+import { type Anim, FRAME_MS, compose, newAnim, observe, tick } from '../src/ui/animation'
+import { decodeCells } from '../src/ui/pixel-art'
 
 type Cell = ReturnType<typeof decodeCells>[number][number]
+
+const STEP_FRAMES = 15
 
 function party(): GameState {
   let g = { ...newGame(7), gold: 10_000 }
   g = recruit(g, 'mage').state
   g = recruit(g, 'ranger').state
-  return g
+  // A stage in, so fights last a few volleys.
+  return { ...g, stage: 4 }
 }
 
-function withMonster(g: GameState, sprite: number, tier: MonsterTier, name: string): GameState {
-  return { ...g, monster: { ...g.monster, sprite, tier, name, hp: 60, maxHp: 100 } }
+/** Runs the game and the animation side by side, as the plugin's two clocks do. */
+function* frames(count: number): Generator<Cell[][]> {
+  let g = party()
+  let a: Anim = newAnim()
+  for (let f = 0; f < count; f += 1) {
+    if (f > 0 && f % STEP_FRAMES === 0) g = step(g)
+    // Now and then Claude calls a tool: an extra strike.
+    if (f % 37 === 20) g = rewardToolCall(g)
+    a = tick(observe(a, g))
+    yield decodeCells(compose(g, a))
+  }
 }
-
-const base = party()
-const scenes: [string, GameState][] = [
-  ...MONSTERS.map((m, i): [string, GameState] => [m.name, withMonster(base, i, 'normal', m.name)]),
-  ['Tinh Anh (viền xanh)', withMonster(base, 1, 'elite', MONSTERS[1]!.name)],
-  ['Hiếm (viền hồng)', withMonster(base, 3, 'rare', MONSTERS[3]!.name)],
-  ...BOSSES.map((m, i): [string, GameState] => [`Boss: ${m.name}`, withMonster(base, i, 'boss', m.name)]),
-  ['Khung tấn công', { ...withMonster(base, 0, 'normal', MONSTERS[0]!.name), frame: 1 }],
-  ['Pháp Sư gục', { ...withMonster(base, 2, 'normal', MONSTERS[2]!.name), heroes: base.heroes.map((h, i) => (i === 1 ? { ...h, hp: 0 } : h)) }],
-]
 
 const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`
 const rgb = (c: number) => `${(c >> 16) & 255};${(c >> 8) & 255};${c & 255}`
@@ -39,42 +42,51 @@ function ansi(rows: Cell[][]): string {
   return rows
     .map(row =>
       row
-        .map(cell => `${cell.fg === null ? '' : `\x1b[38;2;${rgb(cell.fg)}m`}${cell.bg === null ? '' : `\x1b[48;2;${rgb(cell.bg)}m`}${cell.ch}\x1b[0m`)
+        .map(c => {
+          const codes = [c.fg === null ? '' : `38;2;${rgb(c.fg)}`, c.bg === null ? '' : `48;2;${rgb(c.bg)}`].filter(Boolean)
+          return codes.length === 0 ? c.ch : `\x1b[${codes.join(';')}m${c.ch}\x1b[0m`
+        })
         .join(''),
     )
     .join('\n')
 }
 
-// Each cell as two stacked pixels, so the page shows what a terminal with
-// square-ish cells shows, without font gaps between rows.
-function html(rows: Cell[][]): string {
-  const px = rows.flatMap(row => {
-    const top = row.map(c => (c.ch === '▀' ? c.fg : c.ch === '▄' ? c.bg : null))
-    const bottom = row.map(c => (c.ch === '▀' ? c.bg : c.ch === '▄' ? c.fg : null))
-    return [top, bottom]
-  })
-  const cols = rows[0]?.length ?? 0
-  return `<div class="g" style="grid-template-columns:repeat(${cols},6px)">${px
-    .flat()
-    .map(c => `<i${c === null ? '' : ` style="background:${hex(c)}"`}></i>`)
-    .join('')}</div>`
+/** A frame as pixel colors, top row first: two pixels per cell. */
+function pixels(rows: Cell[][]): (string | null)[][] {
+  return rows.flatMap(row => [
+    row.map(c => (c.ch === '▀' ? c.fg : c.ch === '▄' ? c.bg : null)),
+    row.map(c => (c.ch === '▀' ? c.bg : c.ch === '▄' ? c.fg : null)),
+  ]).map(line => line.map(c => (c === null ? null : hex(c))))
 }
 
 const htmlAt = process.argv.indexOf('--html')
 if (htmlAt >= 0) {
-  const body = scenes
-    .map(([label, g]) => {
-      const scene = pixelScene(g)
-      return `<figure>${html(decodeCells(scene))}<figcaption>${label} · ${scene.columns} cột × ${scene.rows} dòng</figcaption></figure>`
-    })
-    .join('')
-  await Bun.write(
-    process.argv[htmlAt + 1] ?? 'pixel-preview.html',
-    `<!doctype html><meta charset="utf-8"><title>Terminal Tales pixel preview</title>
+  const all = [...frames(300)].map(pixels)
+  const page = `<!doctype html><meta charset="utf-8"><title>Terminal Tales animation</title>
 <style>body{background:#1e1e2e;color:#a6adc8;font:13px Menlo,monospace;margin:20px}
-.g{display:grid}.g i{display:block;width:6px;height:6px}
-figure{display:inline-block;margin:0 28px 22px 0}figcaption{margin-top:6px}</style>${body}`,
-  )
+canvas{image-rendering:pixelated;border:1px solid #45475a;display:block;margin-bottom:8px}</style>
+<canvas id="big"></canvas><div id="info"></div><p>Cỡ thật trong terminal (mỗi pixel ≈ nửa ô chữ):</p><canvas id="small"></canvas>
+<script>
+const frames = ${JSON.stringify(all)};
+const h = frames[0].length, w = frames[0][0].length;
+function setup(id, scale) { const c = document.getElementById(id); c.width = w; c.height = h; c.style.width = w * scale + 'px'; c.style.height = h * scale + 'px'; return c.getContext('2d') }
+const big = setup('big', 8), small = setup('small', 3);
+let f = 0;
+setInterval(() => {
+  for (const ctx of [big, small]) {
+    ctx.clearRect(0, 0, w, h);
+    frames[f].forEach((row, y) => row.forEach((c, x) => { if (c) { ctx.fillStyle = c; ctx.fillRect(x, y, 1, 1) } }));
+  }
+  document.getElementById('info').textContent = 'khung ' + (f + 1) + '/' + frames.length + ' · ' + w + ' cột × ' + h / 2 + ' dòng';
+  f = (f + 1) % frames.length;
+}, ${FRAME_MS});
+</script>`
+  await Bun.write(process.argv[htmlAt + 1] ?? 'pixel-preview.html', page)
 } else {
-  for (const [label, g] of scenes) console.log(`${label}\n${ansi(decodeCells(pixelScene(g)))}\n`)
+  const gen = frames(Number.MAX_SAFE_INTEGER)
+  setInterval(() => {
+    const next = gen.next()
+    if (next.done) process.exit(0)
+    process.stdout.write(`\x1b[2J\x1b[H${ansi(next.value)}\n\nctrl+c để thoát\n`)
+  }, FRAME_MS)
 }

@@ -13,6 +13,7 @@ import { newGame, recruit, rewardTestPass, step } from '../src/game/engine'
 import { band } from '../src/ui/band'
 import { heroPane } from '../src/ui/hero-pane'
 import { decodeCells } from '../src/ui/pixel-art'
+import { pixelScene } from '../src/ui/animation'
 
 type Node = { type: string; props: Record<string, unknown>; children: unknown[] }
 
@@ -110,7 +111,7 @@ function demoGame(): GameState {
 }
 
 function drawBand(g: GameState, cols: number, rows = 20, pixel = true): string {
-  return frame('phía trên prompt', lines(band({ kit, raster: pixel ? RASTER : undefined, game: g, columns: cols, rows })), cols)
+  return frame('phía trên prompt', lines(band({ kit, raster: pixel ? RASTER : undefined, scene: pixelScene(g), game: g, columns: cols, rows })), cols)
 }
 
 const CSS: Record<number, string> = {

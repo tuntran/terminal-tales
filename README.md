@@ -6,7 +6,7 @@ vàng và EXP; mỗi lần chạy test xanh, đội nhận thưởng lớn kèm 
 được lưu lại giữa các session.
 
 Trên terminal có truecolor, cảnh đánh nhau được vẽ bằng pixel (mỗi ô terminal là
-hai pixel xếp dọc) và cần khoảng 76–90 cột × 13 dòng. Khi terminal hẹp hoặc thấp
+hai pixel xếp dọc) và cần khoảng 70 cột × 9 dòng. Khi terminal hẹp hoặc thấp
 hơn, và trên Claude Code Desktop, dải tự chuyển sang hình ASCII gọn hơn.
 
 ## Cách chơi
@@ -58,7 +58,8 @@ Trả lời `y` để thêm marketplace, rồi chọn phạm vi (user).
 bun scripts/preview.tsx                 # dải chiến đấu và bảng /hero, có màu
 bun scripts/preview.tsx --watch         # dải chiến đấu chuyển động
 bun scripts/preview.tsx --html out.html # cùng nội dung dưới dạng trang web
-bun scripts/pixel-preview.ts --html out.html  # mọi quái và Boss ở dạng pixel
+bun scripts/pixel-preview.ts             # hoạt ảnh pixel ngay trong terminal
+bun scripts/pixel-preview.ts --html out.html  # hoạt ảnh pixel trong trình duyệt
 ```
 
 ## Phát triển

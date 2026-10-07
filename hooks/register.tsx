@@ -18,7 +18,8 @@ import {
   type ActionResult,
 } from '../src/game/engine'
 import { isPassingRun, isTestCommand } from '../src/game/test-command'
-import { band } from '../src/ui/band'
+import { FRAME_MS, type Anim, compose, newAnim, observe, tick } from '../src/ui/animation'
+import { band, fitsPixels } from '../src/ui/band'
 import { heroPane } from '../src/ui/hero-pane'
 
 const PANE = 'hero'
@@ -41,6 +42,11 @@ const isSaveLocked = atom({ plugin: 'terminal-tales', key: 'isSaveLocked' } as c
 // The timers this copy of the module started; a second session.start in the
 // same copy replaces them rather than doubling the pace.
 let timers: Timer[] = []
+
+// The band's animation and where its pixel scene is mounted. Both are only
+// for drawing: a reload starts them over with a walk-in, nothing is lost.
+let anim: Anim = newAnim()
+let bandSite: { requestId: string; columns: number; rows: number } | null = null
 
 function revOf(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
@@ -128,6 +134,23 @@ async function saveTick($: EngineInterface): Promise<void> {
   await save($)
 }
 
+/** One animation frame: follow the game, then repaint the mounted scene in place. */
+async function animate($: EngineInterface): Promise<void> {
+  const g = await read($, game)
+  if (g === null) return
+  anim = tick(observe(anim, g))
+  const site = bandSite
+  if (site === null) return
+  const scene = compose(g, anim)
+  if (scene.columns !== site.columns || scene.rows !== site.rows) {
+    // The party changed size: the band draws a new Raster.
+    $.ui.invalidate('ui.render')
+    return
+  }
+  const result = await $.ui.blit({ requestId: site.requestId, key: 'scene', cells: scene.cells })
+  if (result.deny !== undefined) bandSite = null
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     if ((await read($, game)) === null) await load($)
@@ -136,7 +159,11 @@ export const register: Register = on => {
       description: 'Terminal Tales: xem đội hình, trang bị và nâng cấp',
     })
     for (const timer of timers) timer.cancel()
-    timers = [$.clock.every(STEP_MS, () => void change($, step)), $.clock.every(SAVE_MS, () => void saveTick($))]
+    timers = [
+      $.clock.every(STEP_MS, () => void change($, step)),
+      $.clock.every(SAVE_MS, () => void saveTick($)),
+      $.clock.every(FRAME_MS, () => void animate($)),
+    ]
     return next(e)
   })
 
@@ -175,7 +202,14 @@ export const register: Register = on => {
     const g = await read($, game)
     if (e.props.hasSurvey || g === null) return next(e)
     const raster = e.surface === 'terminal' ? $.ui.resolve(e).Raster : undefined
-    return band({ kit: $.ui.resolve(e), raster, game: g, columns: e.props.bodyColumns, rows: e.props.maxRows })
+    const scene = compose(g, anim)
+    const columns = e.props.bodyColumns
+    const rows = e.props.maxRows
+    bandSite =
+      raster !== undefined && fitsPixels(scene, columns, rows)
+        ? { requestId: e.requestId, columns: scene.columns, rows: scene.rows }
+        : null
+    return band({ kit: $.ui.resolve(e), raster, scene, game: g, columns, rows })
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

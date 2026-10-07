@@ -5,6 +5,7 @@ import type { On } from 'claude-code'
 import type { GameState, Item } from '../types'
 
 import { REV_KEY, SAVE_KEY, SAVE_MS, STEP_MS, UNREADABLE_KEY } from '../hooks/register'
+import { FRAME_MS } from '../src/ui/animation'
 import { newGame } from '../src/game/engine'
 
 const SURFACES = ['terminal', 'desktop'] as const
@@ -262,6 +263,23 @@ describe('pixel band', () => {
     const ui = await $.ui.mount({ plugin: 'terminal-tales', surface: 'terminal', component: 'AbovePrompt', props: props(90, 20) })
     expect(await ui.find({ type: 'Raster' })).toBeDefined()
     expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join('')).toContain(w.game().heroes[0]!.name)
+    await ui.unmount()
+  })
+
+  test('the mounted picture animates in place through blits of the same size', async ($, on) => {
+    const w = world(on)
+    const blits: { key: string; cells: string }[] = []
+    on('ui.blit', (_$, e) => {
+      if ('cells' in e) blits.push({ key: e.key, cells: e.cells })
+      return { value: {} } as never
+    })
+    await start($)
+    const ui = await $.ui.mount({ plugin: 'terminal-tales', surface: 'terminal', component: 'AbovePrompt', props: props(140, 20) })
+    const mounted = (await ui.find({ type: 'Raster' }))!.props as { cells: string }
+    await w.clock.advance(FRAME_MS * 30)
+    expect(blits.length).toBeGreaterThanOrEqual(20)
+    expect(blits.every(b => b.key === 'scene' && b.cells.length === mounted.cells.length)).toBe(true)
+    expect(new Set(blits.map(b => b.cells)).size).toBeGreaterThan(5)
     await ui.unmount()
   })
 

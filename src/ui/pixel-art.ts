@@ -1,6 +1,4 @@
-import type { GameState, HeroClass, MonsterTier } from '../../types'
-
-import { heroStats } from '../game/engine'
+import type { HeroClass } from '../../types'
 
 // Pixel sprites. Each row is a string of palette keys, '.' transparent. Two
 // pixel rows share one terminal cell through the half block '▀': its
@@ -44,72 +42,111 @@ export const PALETTE: Record<string, number> = {
 
 export type Sprite = readonly string[]
 
+
 export const PIXEL_HEROES: Record<HeroClass, Sprite> = {
   warrior: [
-    '......qRR........',
-    '.....KKKKKK...W..',
-    '....KLLAAAaK.KLK.',
-    '...KLAAAAAAaKKLK.',
-    '...KAAAAAAaaKKAK.',
-    '...KDDDDDDDDKKAK.',
-    '...KSSKSSKSsKKAK.',
-    '....KsSSSSsKKYYYK',
-    '..KKKKAAAAKKKKyK.',
-    '.KbBBKLAAAAaKSnK.',
-    'KbBYBKAAqRAaaKK..',
-    'KBYYYBKARRQaaK...',
-    'KBBYBBKAAQAaaK...',
-    'KCBBBCKyYYYyyK...',
-    '.KCBCKKaAAAaaK...',
-    '..KCK.KaAKAadK...',
-    '......KdaKdadK...',
-    '.....KNNnKNNnK...',
-    '.....KNnnKNnnnK..',
-    '.....KKKKKKKKKK..',
+    '....qR......',
+    '...KKKKK..W.',
+    '..KLAAAaK.W.',
+    '..KDDDDDK.W.',
+    '..KSKSKsK.W.',
+    '...KsSsK.KYK',
+    '.KKKAAAKKSK.',
+    'KbYBKARaK...',
+    'KBYBKAQaK...',
+    '.KBKKyYyK...',
+    '...KaKKaK...',
+    '..KNNKKNNK..',
   ],
   mage: [
-    '........K.....eE.',
-    '.......KpK...eEWE',
-    '......KpPVK..eEEe',
-    '.....KpPYPVK..eN.',
-    '....KpPPPPPVK..N.',
-    '..KKKKKKKKKKKK.N.',
-    '...KHSSKSSKSHK.N.',
-    '...KHSSKSSKSHK.N.',
-    '....KHsSSSsHK.SN.',
-    '....KVPPpPPVKSSN.',
-    '...KVPPPpPPPVK.N.',
-    '...KPPPPpPPPPK.N.',
-    '..KVPPPYpYPPPVKN.',
-    '..KPPPPPpPPPPPKN.',
-    '..KVPPPPpPPPPVKN.',
-    '..KVPPPPpPPPPVKN.',
-    '.KVPPPPPpPPPPPKN.',
-    '.KVVPPPPpPPPPVVKN',
-    '.KKVVVVVVVVVVVKN.',
-    '..KKnK...KnKK.nN.',
+    '.....K...eE.',
+    '....KpK.eWEe',
+    '...KpYVK.eN.',
+    '..KpPPPVK.N.',
+    '.KKKKKKKKKN.',
+    '..KSKSKsK.N.',
+    '..KHsSsHKSN.',
+    '..KVPpPVKSN.',
+    '.KVPPpPPVKN.',
+    '.KPPYpYPPKN.',
+    '.KVPPpPPVKN.',
+    '.KKKnKKnKKn.',
   ],
   ranger: [
-    '.....KKKKK.......',
-    '....KFGGGgK...n..',
-    '...KFGGGGGgK.WN..',
-    '...KFGGGGGGKKWN..',
-    '...KGHHSKSSK.WN..',
-    '...KGSSSKSSK.WN..',
-    '...KFKsSSSsK.WN..',
-    '....KKKKKKK..WN..',
-    '...KFGGNGGFKSWN..',
-    '..KFGGGNGGGFKSN..',
-    '..KFGgGNGGgFKWN..',
-    '..KSKGGNGGFKKWN..',
-    '..KSKYYYYYyK.WN..',
-    '...KKFGGGGFK.WN..',
-    '....KFGKFGFK.WN..',
-    '....KFGKFGFK.WN..',
-    '....KFFKFFFK.Wn..',
-    '...KNNnKNNnK..n..',
-    '...KNnnKNnnnK....',
-    '...KKKKKKKKKK....',
+    '...KKKK.....',
+    '..KFGGgK..n.',
+    '.KFGGGGgK.WN',
+    '.KGHSKSK..WN',
+    '.KFsSSsK..WN',
+    '..KKKKK...WN',
+    '.KFGNGFKS.WN',
+    'KSGGNGGKS.WN',
+    '.KYYYYyK..WN',
+    '.KFGKFGK..n.',
+    '.KFFKFFK....',
+    'KNNKKNNK....',
+  ],
+}
+
+/** Attack poses, drawn over the idle sprite's slot: they may reach past it. */
+export const PIXEL_HERO_ATTACKS: Record<HeroClass, Sprite> = {
+  warrior: [
+    '....qR........',
+    '...KKKKK......',
+    '..KLAAAaK.....',
+    '..KDDDDDK.....',
+    '..KSKSKsK.....',
+    '...KsSsKK.KKK.',
+    '.KKKAAAKSYLLLW',
+    'KbYBKARaKKKKK.',
+    'KBYBKAQaK.....',
+    '.KBKKyYyK.....',
+    '...KaKKaK.....',
+    '..KNNKKNNK....',
+  ],
+  mage: [
+    '.....K..eEWEe',
+    '....KpK.EWWWE',
+    '...KpYVK.eNe.',
+    '..KpPPPVK.N..',
+    '.KKKKKKKKKN..',
+    '..KSKSKsK.N..',
+    '..KHsSsHKSN..',
+    '..KVPpPVKSN..',
+    '.KVPPpPPVKN..',
+    '.KPPYpYPPKN..',
+    '.KVPPpPPVKN..',
+    '.KKKnKKnKKn..',
+  ],
+  ranger: [
+    '...KKKK......',
+    '..KFGGgK..n..',
+    '.KFGGGGgK.NW.',
+    '.KGHSKSK..N.W',
+    '.KFsSSsK..N.W',
+    '..KKKKK...N.W',
+    '.KFGNGFKSWNNNY',
+    'KSGGNGGK..N.W',
+    '.KYYYYyK..N.W',
+    '.KFGKFGK..NW.',
+    '.KFFKFFK..n..',
+    'KNNKKNNK.....',
+  ],
+}
+
+/** Two stride poses that replace each hero's last two rows while walking. */
+export const PIXEL_HERO_STRIDES: Record<HeroClass, readonly [Sprite, Sprite]> = {
+  warrior: [
+    ['..KaK..KaK..', '.KNNK..KNNK.'],
+    ['....KaaK....', '...KNNNNK...'],
+  ],
+  mage: [
+    ['.KVPPpPPVKN.', 'KKnK...KnKn.'],
+    ['..KVPpPVK.N.', '...KnnnK..n.'],
+  ],
+  ranger: [
+    ['KFFK..KFFK..', 'NNK....KNNK.'],
+    ['..KFFFFK....', '..KNNNNK....'],
   ],
 }
 
@@ -117,98 +154,66 @@ export const PIXEL_HEROES: Record<HeroClass, Sprite> = {
 export const PIXEL_MONSTERS: readonly Sprite[] = [
   // Slime Bug
   [
-    '................',
-    '.....K....K.....',
-    '......K..K......',
-    '.......KK.......',
-    '.....KKbbKK.....',
-    '....KbWWbbbK....',
-    '...KbWbbbbbbK...',
-    '..KbbbbbbbbbbK..',
-    '..KbbKWbbKWbbK..',
-    '.KbbbKKbbKKbbbK.',
-    '.KbbbbbbbbbbbbK.',
-    'KBbbbbbqqbbbbbBK',
-    'KBBbbbbbbbbbbBBK',
-    'KCBBBBBBBBBBBBCK',
-    '.KCCCCCCCCCCCCK.',
-    '..KKKKKKKKKKKK..',
+    '....K..K....',
+    '.....KK.....',
+    '....KbbK....',
+    '...KbWbbK...',
+    '..KbWbbbbK..',
+    '.KbKWbbKWbK.',
+    '.KbKKbbKKbK.',
+    'KBbbbbqqbbBK',
+    'KCBBBBBBBBCK',
+    '.KKKKKKKKKK.',
   ],
   // Goblin Lint
   [
-    '................',
-    '......KKKK......',
-    '.KK..KGGGGK..KK.',
-    'KgGKKGGGGGGKKGgK',
-    '.KgGGIKGGIKGGgK.',
-    '..KGGGGGGGGGGK..',
-    '...KGGKWKWKGK...',
-    '....KKFFFFKK.Nn.',
-    '...KoOOOOOOK.NN.',
-    '..KGKoOOOOoKGNK.',
-    '..KGKOOOOOOKKN..',
-    '...KKoooooK.....',
-    '....KFFKFFK.....',
-    '....KFFKFFK.....',
-    '...KnnK.KnnK....',
-    '...KKKK.KKKK....',
+    '....KKKK....',
+    'KK.KGGGGK.KK',
+    'KgKGIKGIKGgK',
+    '.KGGGGGGGGK.',
+    '..KGKWKWKK.N',
+    '...KKFFKK.NN',
+    '..KoOOOOK.N.',
+    '.KGKOOOoKGK.',
+    '...KoooK....',
+    '...KFKFK....',
+    '..KnK.KnK...',
   ],
   // Dơi Null
   [
-    '................',
-    '................',
-    '................',
-    'K......KK......K',
-    'KK....KVVK....KK',
-    'KPK..KVpVVK..KPK',
-    'KPPK.KIKVIK.KPPK',
-    'KPpPKKVVVVKKPpPK',
-    'KPPpPKVWVWKPpPPK',
-    '.KPPpPKVVKPpPPK.',
-    '..KPKPPKKPPKPK..',
-    '...K.KPK.KPK.K..',
-    '......K...K.....',
-    '................',
-    '................',
-    '................',
+    'K....KK....K',
+    'KPK.KVVK.KPK',
+    'KPPKIVVIKPPK',
+    'KPpPKWWKPpPK',
+    '.KPPKVVKPPK.',
+    '..KK.KK.KK..',
   ],
   // Xương Rò Rỉ
   [
-    '................',
-    '.....KKKKK......',
-    '....KZZZZZK.....',
-    '...KZZZZZZZK....',
-    '...KZKKZKKZK....',
-    '...KZKRZKRZK....',
-    '...KzZZKZZzK....',
-    '....KZKZKZK.....',
-    '.....KKKKK......',
-    '...KK.KZK.KK....',
-    '..KZZKZZZKZZK...',
-    '..KzKKZKZKKzK.b.',
-    '..KZK.KZK.KZK...',
-    '......KZK.......',
-    '.....KZKZK....b.',
-    '....KZK.KZK.....',
+    '..KKKKK...',
+    '.KZZZZZK..',
+    '.KZKZKZK..',
+    '.KZRZRZK..',
+    '..KZKZK...',
+    '...KKK....',
+    '.KKZZZKK..',
+    'KZKZZZKZK.',
+    '...KZK..b.',
+    '..KZKZK...',
+    '..KK.KK.b.',
   ],
   // Nấm Race
   [
-    '................',
-    '.....KKKKKK.....',
-    '...KKRqRRRRKK...',
-    '..KRRWWRRRqRRK..',
-    '.KRRWWRRRRWWRRK.',
-    '.KRRRRRRRRWWRRK.',
-    'KRRWWRRRRRRRRRRK',
-    'KQRWWRRRRRWWRRQK',
-    'KKQQRRRRRRRRQQKK',
-    '..KKKKKKKKKKKK..',
-    '...KZZZZZZZZK...',
-    '...KZKZZZZKZK...',
-    '...KZZZZZZZZK...',
-    '...KzZZqqZZzK...',
-    '...KzzZZZZzzK...',
-    '....KKKKKKKK....',
+    '...KKKKKK...',
+    '.KKRqRRWRKK.',
+    'KRWWRRRRWRRK',
+    'KRWRRRRRRRRK',
+    'KQRRRWWRRRQK',
+    '.KKKKKKKKKK.',
+    '..KZZZZZZK..',
+    '..KZKZZKZK..',
+    '..KzZqqZzK..',
+    '...KKKKKK...',
   ],
 ]
 
@@ -216,131 +221,55 @@ export const PIXEL_MONSTERS: readonly Sprite[] = [
 export const PIXEL_BOSSES: readonly Sprite[] = [
   // Rồng Merge Conflict
   [
-    '..K..............K..',
-    '.KYK............KYK.',
-    '.KyYK..........KYyK.',
-    '..KyRKKKKKKKKKKRyK..',
-    '...KRRRRRRRRRRRRK...',
-    '..KRRRRRRRRRRRRRRK..',
-    '..KRRIKRRRRRRIKRRK..',
-    '..KRRKKRRRRRRKKRRK..',
-    '..KRRRRRRRRRRRRRRK..',
-    '...KRRWKWKWKWKRRK...',
-    '...KQRRRRRRRRRRQK.K.',
-    '..KQRROOOOOOOORRQKRK',
-    '.KRRROOoOOOOoOORRRRK',
-    '.KRRROOOOOOOOOORRRK.',
-    'KRQRROOoOOOOoOORRQRK',
-    'KRQRRROOOOOOOORRRQRK',
-    '.KQRRRRRRRRRRRRRRQK.',
-    '..KRRQKKKKKKKKQRRK..',
-    '..KRRK........KRRK..',
-    '..KKKK........KKKK..',
+    '.K............K.',
+    'KYK..........KYK',
+    'KyRKKKKKKKKKKRyK',
+    '.KRRRRRRRRRRRRK.',
+    '.KRIKRRRRRRIKRK.',
+    '.KRRRRRRRRRRRRK.',
+    '.KRWKWKWKWKWRRK.',
+    'KQRROOOOOOOORRQK',
+    'KRROOoOOOOoOORRK',
+    'KQRROOOOOOOORRQK',
+    '.KRRKKKKKKKKRRK.',
+    '.KKK........KKK.',
   ],
   // Quỷ Deadlock
   [
-    '..K..............K..',
-    '.KRK............KRK.',
-    '.KRQK..........KQRK.',
-    '..KQRKKKKKKKKKKRQK..',
-    '...KVVVVVVVVVVVVK...',
-    '..KVPPPPPPPPPPPPVK..',
-    '..KPPIIKPPPPKIIPPK..',
-    '..KPPPKKPPPPKKPPPK..',
-    '..KPPPPPPPPPPPPPPK..',
-    '...KPKWKWKWKWKPK....',
-    'AA.KVPPPPPPPPPPVK.AA',
-    'aAAKPPPpPPPPpPPPKAAa',
-    '.aKVPPPPPPPPPPPPVKa.',
-    '..KPPPYYPPPPYYPPPK..',
-    '..KVPPPPPPPPPPPPVK..',
-    '..KVPPPPPPPPPPPPVK..',
-    '...KVVVVKKKKVVVVK...',
-    '...KPPK......KPPK...',
-    '..KPPPK......KPPPK..',
-    '..KKKKK......KKKKK..',
+    '.K............K.',
+    'KRK..........KRK',
+    'KQRKKKKKKKKKKRQK',
+    '.KVPPPPPPPPPPVK.',
+    '.KPIIKPPPPKIIPK.',
+    '.KPPPPPPPPPPPPK.',
+    '.KPKWKWKWKWKPPK.',
+    'AAKVPPPPPPPPVKAA',
+    'aAKPPYYPPYYPPKAa',
+    '..KVPPPPPPPPVK..',
+    '..KPPK....KPPK..',
+    '..KKKK....KKKK..',
   ],
 ]
 
-// ---------- composing a scene ----------
+/** A 3x5 pixel font for damage numbers: digits and 'k' for thousands. */
+export const DIGITS: Record<string, readonly string[]> = {
+  '0': ['111', '101', '101', '101', '111'],
+  '1': ['010', '110', '010', '010', '111'],
+  '2': ['111', '001', '111', '100', '111'],
+  '3': ['111', '001', '111', '001', '111'],
+  '4': ['101', '101', '111', '001', '001'],
+  '5': ['111', '100', '111', '001', '111'],
+  '6': ['111', '100', '111', '101', '111'],
+  '7': ['111', '001', '010', '010', '010'],
+  '8': ['111', '101', '111', '101', '111'],
+  '9': ['111', '101', '111', '001', '111'],
+  k: ['100', '101', '110', '101', '101'],
+}
 
 /** A pixel canvas: `null` is transparent, drawn in the terminal's own background. */
-type Canvas = { width: number; height: number; px: (number | null)[] }
-
-const GROUND_GAP = 2
-const HERO_GAP = 1
-const VS_GAP = 5
-/** Pixel rows under the sprites: one for the gap, two for the HP bars. */
-const BAR_ROWS = 2
-
-const TIER_OUTLINE: Partial<Record<MonsterTier, number>> = {
-  elite: 0x2fb7c9,
-  rare: 0xb55088,
-}
-
-function width(sprite: Sprite): number {
-  return Math.max(...sprite.map(row => row.length))
-}
-
-function gray(color: number): number {
-  const v = Math.round(((color >> 16) & 255) * 0.3 + ((color >> 8) & 255) * 0.59 + (color & 255) * 0.11) * 0.6
-  const c = Math.round(v)
-  return (c << 16) | (c << 8) | c
-}
-
-function stamp(canvas: Canvas, sprite: Sprite, left: number, bottom: number, tint: (key: string, color: number) => number): void {
-  const top = bottom - sprite.length
-  sprite.forEach((row, y) => {
-    Array.from(row).forEach((key, x) => {
-      const color = PALETTE[key]
-      const cx = left + x
-      const cy = top + y
-      if (color === undefined || cx < 0 || cy < 0 || cx >= canvas.width || cy >= canvas.height) return
-      canvas.px[cy * canvas.width + cx] = tint(key, color)
-    })
-  })
-}
-
-function hpBar(canvas: Canvas, left: number, w: number, y: number, ratio: number, fill: number): void {
-  const filled = Math.round(Math.min(1, Math.max(0, ratio)) * w)
-  for (let x = 0; x < w; x += 1) canvas.px[y * canvas.width + left + x] = x < filled ? fill : 0x3a3f58
-}
+export type Canvas = { width: number; height: number; px: (number | null)[] }
 
 export type PixelScene = { columns: number; rows: number; cells: string }
-
-/** Lays the party and the monster out as one half-block picture. */
-export function pixelScene(game: GameState): PixelScene {
-  const heroes = game.heroes.map(hero => PIXEL_HEROES[hero.cls])
-  const monster =
-    game.monster.tier === 'boss'
-      ? (PIXEL_BOSSES[game.monster.sprite] ?? PIXEL_BOSSES[0]!)
-      : (PIXEL_MONSTERS[game.monster.sprite] ?? PIXEL_MONSTERS[0]!)
-  const lunge = game.frame === 1 && game.resting === 0 ? 1 : 0
-  const heroesWidth = heroes.reduce((sum, s) => sum + width(s) + HERO_GAP, 0)
-  const canvasWidth = heroesWidth + VS_GAP + width(monster) + 1
-  const spriteHeight = Math.max(...heroes.map(s => s.length), monster.length)
-  // An even height, so every cell row holds two whole pixel rows.
-  const canvasHeight = Math.ceil((spriteHeight + GROUND_GAP + BAR_ROWS) / 2) * 2
-  const canvas: Canvas = { width: canvasWidth, height: canvasHeight, px: Array(canvasWidth * canvasHeight).fill(null) }
-  const ground = spriteHeight
-  const barY = canvasHeight - 1
-
-  let left = 0
-  game.heroes.forEach((hero, i) => {
-    const sprite = heroes[i]!
-    const isDown = hero.hp <= 0
-    stamp(canvas, sprite, left + (isDown ? 0 : lunge), ground, (_, color) => (isDown ? gray(color) : color))
-    hpBar(canvas, left + 1, width(sprite) - 2, barY, hero.hp / heroStats(hero).maxHp, 0x4fbf5a)
-    left += width(sprite) + HERO_GAP
-  })
-
-  const monsterLeft = heroesWidth + VS_GAP
-  const outline = TIER_OUTLINE[game.monster.tier]
-  stamp(canvas, monster, monsterLeft - lunge, ground - lunge, (key, color) => (key === 'K' && outline !== undefined ? outline : color))
-  hpBar(canvas, monsterLeft + 1, width(monster) - 2, barY, game.monster.hp / game.monster.maxHp, 0xc23b4f)
-
-  return { columns: canvas.width, rows: canvas.height / 2, cells: encodeCells(canvas) }
-}
 
 // ---------- the Raster's cells ----------
 
@@ -363,7 +292,7 @@ function base64(bytes: Uint8Array): string {
 }
 
 /** Packs the canvas as `[codePoint, foreground, background]` u32 triplets, little-endian, base64. */
-function encodeCells(canvas: Canvas): string {
+export function encodeCells(canvas: Canvas): string {
   const rows = canvas.height / 2
   const words = new Uint32Array(canvas.width * rows * 3)
   for (let row = 0; row < rows; row += 1) {

@@ -5,7 +5,7 @@ import type { GameState } from '../../types'
 import { KILLS_PER_STAGE, TIERS } from '../game/catalog'
 import { heroStats } from '../game/engine'
 import { CLASS_COLOR, bar, formatNumber, heroSprite, monsterSprite, pad, summaryLine } from './art'
-import { pixelScene } from './pixel-art'
+import type { PixelScene } from './pixel-art'
 
 export type Kit = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>
 /** The terminal's cell grid; absent on surfaces that have none, which draw ASCII. */
@@ -22,12 +22,23 @@ const MIN_SCENE_COLUMNS = 46
 /** Wider than this, the info column sits beside the scene; narrower, one info row goes under it. */
 const MIN_INFO_COLUMNS = 72
 
-export function band(props: { kit: Kit; raster: RasterKit; game: GameState; columns: number; rows: number }): RenderElement {
-  const { kit, raster: Raster, game, columns, rows } = props
+/** True when the band has room for the pixel scene and a line of text under it. */
+export function fitsPixels(scene: PixelScene, columns: number, rows: number): boolean {
+  return columns >= scene.columns && rows > scene.rows
+}
+
+export function band(props: {
+  kit: Kit
+  raster: RasterKit
+  scene: PixelScene
+  game: GameState
+  columns: number
+  rows: number
+}): RenderElement {
+  const { kit, raster: Raster, scene: pixels, game, columns, rows } = props
   const { Box, Text } = kit
 
-  const pixels = Raster === undefined ? null : pixelScene(game)
-  if (Raster !== undefined && pixels !== null && columns >= pixels.columns && rows > pixels.rows) {
+  if (Raster !== undefined && fitsPixels(pixels, columns, rows)) {
     const picture = <Raster key="scene" columns={pixels.columns} rows={pixels.rows} cells={pixels.cells} />
     if (columns >= pixels.columns + INFO_COLUMNS) {
       return (
