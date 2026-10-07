@@ -9,7 +9,7 @@
 
 import type { GameState } from '../types'
 
-import { newGame, recruit, rewardTestPass, step } from '../src/game/engine'
+import { applyAction, newGame, recruit, rewardTestPass, step } from '../src/game/engine'
 import { band } from '../src/ui/band'
 import { heroPane } from '../src/ui/hero-pane'
 import { decodeCells } from '../src/ui/pixel-art'
@@ -98,7 +98,7 @@ function frame(title: string, body: string[], cols: number): string {
   ].join('\n')
 }
 
-/** A game a few hours in: three heroes, a bag of loot. */
+/** A game a few hours in: three heroes, a bag of loot, a buff on each side. */
 function demoGame(): GameState {
   let g = newGame(20261007)
   for (let i = 0; i < 400; i += 1) g = step(g)
@@ -107,6 +107,8 @@ function demoGame(): GameState {
   g = recruit(g, 'ranger').state
   for (let i = 0; i < 6; i += 1) g = rewardTestPass(g)
   for (let i = 0; i < 30; i += 1) g = step(g)
+  g = applyAction(applyAction(applyAction(g, 'prompt'), 'commit'), 'turnAborted')
+  for (let i = 0; i < 3; i += 1) g = step(g)
   return g
 }
 

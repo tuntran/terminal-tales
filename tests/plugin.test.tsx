@@ -201,6 +201,135 @@ describe('coding activity', () => {
   })
 })
 
+describe('user actions', () => {
+  const effects = (g: GameState) => g.effects.map(e => e.kind)
+
+  test("the user's own prompt rallies the party; a plugin's or a peer's does not", async ($, on) => {
+    const w = world(on)
+    on('prompt.submit', (_$, e) => ({ text: e.text }))
+    await start($)
+    await $.prompt.submit({ text: 'hi', origin: { kind: 'sdk' } } as never)
+    expect(effects(w.game())).toEqual([])
+    await $.prompt.submit({ text: 'hi', origin: { kind: 'composer' } } as never)
+    expect(effects(w.game())).toEqual(['rally'])
+  })
+
+  test('a finished main turn heals the party; an aborted one enrages the monster and toasts', async ($, on) => {
+    const w = world(on)
+    on('turn.complete', (_$, e) => ({ text: e.answer }))
+    await start($)
+    const hurt = w.game()
+    await $.turn.complete({ turnId: 't1', reason: 'answer', answer: '', durationMs: 1, isAborted: false })
+    expect(w.game().log.at(-1)).toContain('Tiếp sức')
+    await $.turn.complete({ turnId: 't2', reason: 'answer', answer: '', durationMs: 1, isAborted: false, agentId: 'a1' })
+    expect(w.game().log.filter(l => l.includes('Tiếp sức'))).toHaveLength(1)
+    await $.turn.complete({ turnId: 't3', reason: 'aborted', answer: '', durationMs: 1, isAborted: true })
+    expect(effects(w.game())).toEqual(['enrage'])
+    expect(w.toasts.some(t => t.includes('nổi giận'))).toBe(true)
+    expect(hurt.gold).toBeLessThanOrEqual(w.game().gold)
+  })
+
+  test('a manual compact calms the party; an automatic one does not', async ($, on) => {
+    const w = world(on)
+    const transcript = [{ role: 'user', text: 'hi', toolUses: [] }]
+    on('session.compact', () => ({ messages: [{ role: 'user' as const, text: 'tóm tắt', toolUses: [] }] }))
+    await start($)
+    await $.session.compact({ trigger: 'auto', messages: transcript } as never)
+    expect(w.game().log.some(l => l.includes('Tĩnh tâm'))).toBe(false)
+    await $.session.compact({ trigger: 'manual', messages: transcript } as never)
+    expect(w.game().log.at(-1)).toContain('Tĩnh tâm')
+  })
+
+  test('a successful git commit raises a milestone shield', async ($, on) => {
+    const w = world(on)
+    answerBash(on, '[main abc123] feat: x')
+    await start($)
+    await $.tool.call({ tool: 'Bash', command: 'git commit -m "feat: x"' })
+    expect(effects(w.game())).toEqual(['milestone'])
+  })
+
+  test('a failing command regenerates the monster; an interrupted one does not', async ($, on) => {
+    const w = world(on)
+    let text = 'Exit code 1\nboom'
+    on('tool.call', { tool: 'Bash' }, () => ({ isError: true as const, result: text, text }))
+    await start($)
+    await $.tool.call({ tool: 'Bash', command: 'false' })
+    expect(w.game().log.at(-1)).toContain('tái sinh')
+    expect(w.toasts.some(t => t.includes('tái sinh'))).toBe(true)
+    text = 'Exit code 137\n[Request interrupted by user for tool use]'
+    const before = w.game().log.filter(l => l.includes('tái sinh')).length
+    await $.tool.call({ tool: 'Bash', command: 'ping -c 40 127.0.0.1' })
+    expect(w.game().log.filter(l => l.includes('tái sinh'))).toHaveLength(before)
+  })
+
+  /**
+   * A Bash call the engine's check puts to the mode's decider, answered as
+   * `text` says; with `dialog` the decider is the user's dialog, without it
+   * auto mode's classifier, which raises no PermissionRequest.
+   */
+  function answerAsked(on: On, text: string, isError: boolean): void {
+    on('tool.check', () => ({ decision: 'ask' as const }))
+    on('classic.PermissionRequest', () => ({}))
+    on('tool.call', { tool: 'Bash' }, () =>
+      isError ? { isError: true as const, result: text, text } : { result: { stdout: text, stderr: '', interrupted: false }, text },
+    )
+  }
+
+  async function askedBash($: Engine, dialog = true): Promise<void> {
+    const input = { command: 'mkdir x' }
+    await $.tool.check({ tool: 'Bash', input, tool_use_id: 'toolu_1' } as never)
+    if (dialog) await $.classic.PermissionRequest({ tool_name: 'Bash', tool_input: input } as never)
+    await $.tool.call({ tool: 'Bash', ...input, tool_use_id: 'toolu_1' } as never)
+  }
+
+  test('allowing a call in the dialog grants trust', async ($, on) => {
+    const w = world(on)
+    answerAsked(on, 'ok', false)
+    await start($)
+    await askedBash($)
+    expect(effects(w.game())).toEqual(['trust'])
+  })
+
+  test('rejecting a call grants the monster stoneskin, and only that', async ($, on) => {
+    const w = world(on)
+    answerAsked(on, "The user doesn't want to proceed with this tool use. The tool use was rejected", true)
+    await start($)
+    await askedBash($)
+    expect(effects(w.game())).toEqual(['stoneskin'])
+    expect(w.game().log.some(l => l.includes('tái sinh'))).toBe(false)
+  })
+
+  test('a call the auto mode decided without a dialog grants nothing', async ($, on) => {
+    const w = world(on)
+    answerAsked(on, 'ok', false)
+    await start($)
+    await askedBash($, false)
+    expect(effects(w.game())).toEqual([])
+  })
+
+  test('the band shows both sides\' effects', async ($, on) => {
+    const w = world(on)
+    on('prompt.submit', (_$, e) => ({ text: e.text }))
+    on('turn.complete', (_$, e) => ({ text: e.answer }))
+    await start($)
+    await $.prompt.submit({ text: 'hi', origin: { kind: 'composer' } } as never)
+    await $.turn.complete({ turnId: 't', reason: 'aborted', answer: '', durationMs: 1, isAborted: true })
+    expect(effects(w.game())).toEqual(['rally', 'enrage'])
+    for (const surface of SURFACES) {
+      const ui = await $.ui.mount({
+        plugin: 'terminal-tales',
+        surface,
+        component: 'AbovePrompt',
+        props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 140, scroll: { top: 0, bodyRows: 19, contentRows: 0 }, view: {} } as never,
+      })
+      const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
+      expect(texts, surface).toContain('Hô khiến')
+      expect(texts, surface).toContain('Nổi giận')
+      await ui.unmount()
+    }
+  })
+})
+
 describe('band', () => {
   test('draws the party and the monster above the prompt at every width', async ($, on) => {
     const w = world(on)

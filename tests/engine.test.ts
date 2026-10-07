@@ -21,7 +21,7 @@ import {
   upgrade,
   upgradeCost,
 } from '../src/game/engine'
-import { isPassingRun, isTestCommand } from '../src/game/test-command'
+import { isFailedRun, isGitCommit, isPassingRun, isRejectedCall, isTestCommand } from '../src/game/test-command'
 import { bar } from '../src/ui/art'
 import { BOSSES, MONSTERS } from '../src/game/catalog'
 import { PALETTE, PIXEL_BOSSES, PIXEL_HEROES, PIXEL_HERO_ATTACKS, PIXEL_HERO_STRIDES, PIXEL_MONSTERS, decodeCells } from '../src/ui/pixel-art'
@@ -489,6 +489,32 @@ describe('test command detection', () => {
     expect(isPassingRun('===== 1 failed, 3 passed in 0.12s =====', false)).toBe(false)
     expect(isPassingRun('not ok 2 - adds', false)).toBe(false)
     expect(isPassingRun('anything', true)).toBe(false)
+  })
+})
+
+describe('action detection', () => {
+  test('recognises a real git commit', () => {
+    expect(isGitCommit('git commit -m "x"')).toBe(true)
+    expect(isGitCommit('git add -A && git commit -qm "feat: y"')).toBe(true)
+    expect(isGitCommit('git -C repo commit --amend --no-edit')).toBe(true)
+    expect(isGitCommit('git commit --dry-run')).toBe(false)
+    expect(isGitCommit('git commit -h')).toBe(false)
+    expect(isGitCommit('echo "git commit"')).toBe(false)
+    expect(isGitCommit('git log --oneline')).toBe(false)
+  })
+
+  test('a failed run has an exit code, unlike an interrupt, a rejection or a block', () => {
+    expect(isFailedRun('Exit code 1\nmkdir: x: File exists', true)).toBe(true)
+    expect(isFailedRun('Exit code 1', false)).toBe(false)
+    expect(isFailedRun('Exit code 137\n[Request interrupted by user for tool use]\nPING', true)).toBe(false)
+    expect(isFailedRun("The user doesn't want to proceed with this tool use. The tool use was rejected", true)).toBe(false)
+    expect(isFailedRun('<tool_use_error>Blocked: sleep 25</tool_use_error>', true)).toBe(false)
+  })
+
+  test("a rejected call carries the dialog's rejection text", () => {
+    expect(isRejectedCall("The user doesn't want to proceed with this tool use. The tool use was rejected", true)).toBe(true)
+    expect(isRejectedCall('Exit code 1', true)).toBe(false)
+    expect(isRejectedCall("The user doesn't want to proceed with this tool use.", false)).toBe(false)
   })
 })
 

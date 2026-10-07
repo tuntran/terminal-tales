@@ -4,7 +4,7 @@ import type { GameState } from '../../types'
 
 import { KILLS_PER_STAGE, TIERS } from '../game/catalog'
 import { heroStats } from '../game/engine'
-import { CLASS_COLOR, bar, formatNumber, heroSprite, monsterSprite, pad, summaryLine } from './art'
+import { CLASS_COLOR, bar, effectsOf, formatNumber, heroSprite, monsterSprite, pad, summaryLine } from './art'
 import type { PixelScene } from './pixel-art'
 
 export type Kit = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button'>
@@ -104,6 +104,7 @@ export function band(props: {
   const info = infoLines(kit, game)
 
   if (columns < MIN_INFO_COLUMNS) {
+    const effects = effectsRow(kit, game)
     return (
       <Box flexDirection="column">
         {scene}
@@ -112,6 +113,7 @@ export function band(props: {
             {summaryLine(game)}
           </Text>
         )}
+        {rows > SCENE_ROWS + 2 && effects}
       </Box>
     )
   }
@@ -126,8 +128,28 @@ export function band(props: {
   )
 }
 
+/** The lasting effects of both sides, the party's in green and the monster's in red; null when none. */
+function effectsRow(kit: Kit, game: GameState): RenderElement | null {
+  const { Text } = kit
+  const heroes = effectsOf(game, 'heroes')
+  const monster = effectsOf(game, 'monster')
+  if (heroes === null && monster === null) return null
+  return (
+    <Text wrap="truncate-end">
+      {heroes !== null && <Text color="green">{`Đội ${heroes}`}</Text>}
+      {heroes !== null && monster !== null && <Text dimColor>{'  |  '}</Text>}
+      {monster !== null && <Text color="red">{`Quái ${monster}`}</Text>}
+    </Text>
+  )
+}
+
+function lastLines(log: readonly string[], count: number): readonly string[] {
+  return count > 0 ? log.slice(-count) : []
+}
+
 function infoLines(kit: Kit, game: GameState, logLines = 2): RenderElement[] {
   const { Text } = kit
+  const effects = effectsRow(kit, game)
   const monster = game.monster
   const tier = TIERS[monster.tier]
   const progress = monster.tier === 'boss' ? 'BOSS!' : `${game.stageKills}/${KILLS_PER_STAGE}`
@@ -143,7 +165,9 @@ function infoLines(kit: Kit, game: GameState, logLines = 2): RenderElement[] {
     <Text dimColor wrap="truncate-end">
       {party}
     </Text>,
-    ...game.log.slice(-logLines).map(line => (
+    // The effects row takes the place of the oldest log line, so the column keeps its height.
+    ...(effects === null ? [] : [effects]),
+    ...lastLines(game.log, effects === null ? logLines : logLines - 1).map(line => (
       <Text dimColor wrap="truncate-end">
         {`› ${line}`}
       </Text>

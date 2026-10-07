@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { GameState, HeroClass, PendingRewards, Slot } from '../types'
+import type { GameAction, GameState, HeroClass, PendingRewards, Slot } from '../types'
 
 import {
+  applyAction,
   equip,
   isNewerSave,
   newGame,
@@ -17,7 +18,7 @@ import {
   upgrade,
   type ActionResult,
 } from '../src/game/engine'
-import { isPassingRun, isTestCommand } from '../src/game/test-command'
+import { isFailedRun, isGitCommit, isPassingRun, isRejectedCall, isTestCommand } from '../src/game/test-command'
 import { FRAME_MS, type Anim, compose, newAnim, observe, tick } from '../src/ui/animation'
 import { band, fitsPixels } from '../src/ui/band'
 import { heroPane } from '../src/ui/hero-pane'
@@ -33,6 +34,13 @@ const MAX_REPLAY = 2000
 
 const NO_PENDING: PendingRewards = { toolCalls: 0, testPasses: 0 }
 
+/** What a toast says when an action buffs the monster, so the user sees why it grew stronger. */
+const MONSTER_TOASTS: Partial<Record<GameAction, string>> = {
+  turnAborted: 'Terminal Tales: Esc! Quái nổi giận.',
+  permissionDenied: 'Terminal Tales: từ chối quyền, quái khoác giáp đá.',
+  bashFailed: 'Terminal Tales: lệnh lỗi, quái tái sinh.',
+}
+
 const game = atom({ plugin: 'terminal-tales', key: 'game' } as const, null)
 const selectedHero = atom({ plugin: 'terminal-tales', key: 'selectedHero' } as const, 0)
 const baseRev = atom({ plugin: 'terminal-tales', key: 'baseRev' } as const, 0)
@@ -46,6 +54,18 @@ let timers: Timer[] = []
 // The band's animation and where its pixel scene is mounted. Both are only
 // for drawing: a reload starts them over with a walk-in, nothing is lost.
 let anim: Anim = newAnim()
+
+// Calls the engine's own check put to the mode's decider, by tool_use_id: the
+// dialog asks the user, but auto mode's classifier answers some without one.
+// A classic PermissionRequest no hook beneath answered means the dialog
+// showed, which moves the call to `dialogCalls`; its tool.call result then
+// tells the user's answer.
+const askedCalls = new Map<string, string>()
+const dialogCalls = new Set<string>()
+
+function callKey(tool: string, input: unknown): string {
+  return JSON.stringify([tool, input])
+}
 let bandSite: { requestId: string; columns: number; rows: number } | null = null
 
 function revOf(value: unknown): number {
@@ -66,6 +86,12 @@ async function change($: EngineInterface, fn: (g: GameState) => GameState): Prom
 async function earn($: EngineInterface, fn: (g: GameState) => GameState, reward: keyof PendingRewards): Promise<void> {
   await change($, fn)
   await update($, pending, p => ({ ...p, [reward]: p[reward] + 1 }))
+}
+
+async function perform($: EngineInterface, action: GameAction): Promise<void> {
+  await change($, g => applyAction(g, action))
+  const toast = MONSTER_TOASTS[action]
+  if (toast !== undefined) $.ui.toast(toast)
 }
 
 async function act($: EngineInterface, fn: (g: GameState) => ActionResult): Promise<void> {
@@ -182,20 +208,70 @@ export const register: Register = on => {
   // never refuses the call: the handler replays what next settled to.
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
+    const id = e.tool_use_id
+    const wasDialog = id !== undefined && dialogCalls.delete(id)
+    if (id !== undefined) askedCalls.delete(id)
+    const text = ran.text ?? ''
+    if (wasDialog) await perform($, isRejectedCall(text, ran.isError === true) ? 'permissionDenied' : 'permissionAllowed')
     if (ran.deny !== undefined) return ran
     await earn($, rewardToolCall, 'toolCalls')
-    if (e.tool === 'Bash' && isTestCommand(e.command)) {
+    if (e.tool === 'Bash') {
       const isBackgrounded =
         typeof ran.result === 'object' &&
         ran.result !== null &&
         'backgroundTaskId' in ran.result &&
         ran.result.backgroundTaskId !== undefined
-      if (!isBackgrounded && isPassingRun(ran.text ?? '', ran.isError === true)) {
+      if (!isBackgrounded && isTestCommand(e.command) && isPassingRun(text, ran.isError === true)) {
         await earn($, rewardTestPass, 'testPasses')
         $.ui.toast('Terminal Tales: test xanh! Cả đội nhận thưởng lớn và một món đồ.')
       }
+      if (!isBackgrounded && ran.isError !== true && isGitCommit(e.command)) await perform($, 'commit')
+      if (isFailedRun(text, ran.isError === true)) await perform($, 'bashFailed')
     }
     return ran
+  }).catch(($, e, next) => next(e))
+
+  on('tool.check', async ($, e, next) => {
+    const verdict = await next(e)
+    if (verdict.decision === 'ask' && e.tool_use_id !== undefined) askedCalls.set(e.tool_use_id, callKey(e.tool, e.input))
+    return verdict
+  }).catch(($, e, next) => next(e))
+
+  on('classic.PermissionRequest', async ($, e, next) => {
+    const answer = await next(e)
+    if (answer.decision === undefined) {
+      const key = callKey(e.tool_name, e.tool_input)
+      for (const [id, asked] of askedCalls) {
+        if (asked !== key) continue
+        askedCalls.delete(id)
+        dialogCalls.add(id)
+        break
+      }
+    }
+    return answer
+  }).catch(($, e, next) => next(e))
+
+  // Only the user's own Enter at the prompt rallies the party: not a plugin's
+  // prompt, a notification, a peer session or a schedule.
+  on('prompt.submit', async ($, e, next) => {
+    const entered = await next(e)
+    if (e.origin.kind === 'composer' && entered.drop === undefined) await perform($, 'prompt')
+    return entered
+  }).catch(($, e, next) => next(e))
+
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    if (e.agentId === undefined) {
+      if (e.reason === 'answer') await perform($, 'turnDone')
+      else if (e.reason === 'aborted') await perform($, 'turnAborted')
+    }
+    return done
+  }).catch(($, e, next) => next(e))
+
+  on('session.compact', async ($, e, next) => {
+    const compacted = await next(e)
+    if (e.trigger === 'manual' && e.agentId === undefined && compacted.skip === undefined) await perform($, 'compact')
+    return compacted
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {

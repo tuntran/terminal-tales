@@ -1,6 +1,6 @@
-import type { GameState, Hero, HeroClass, Monster } from '../../types'
+import type { Effect, GameState, Hero, HeroClass, Monster } from '../../types'
 
-import { BOSSES, DOWN_SPRITE, HERO_SPRITES, MONSTERS } from '../game/catalog'
+import { BOSSES, DOWN_SPRITE, EFFECTS, HERO_SPRITES, MONSTERS } from '../game/catalog'
 
 export const CLASS_COLOR: Record<HeroClass, string> = {
   warrior: 'red',
@@ -36,4 +36,19 @@ export function monsterSprite(monster: Monster): readonly string[] {
 export function summaryLine(g: GameState): string {
   const party = g.heroes.map(h => `${h.name} ${h.level}`).join(', ')
   return `Ải ${g.stage} · ${formatNumber(g.gold)} vàng · ${party} vs ${g.monster.name} ${bar(g.monster.hp, g.monster.maxHp, 6)}`
+}
+
+/** Seconds a combat step lasts, for showing an effect's time left. */
+const STEP_SECONDS = 1.5
+
+function effectLabel(effect: Effect): string {
+  const info = EFFECTS[effect.kind]
+  const left = effect.charges > 0 ? `x${effect.charges}` : `${Math.ceil(effect.steps * STEP_SECONDS)}s`
+  return `${info.icon} ${info.label} ${left}`
+}
+
+/** One side's lasting effects, or null when it has none. */
+export function effectsOf(g: GameState, side: 'heroes' | 'monster'): string | null {
+  const labels = g.effects.filter(e => EFFECTS[e.kind].side === side).map(effectLabel)
+  return labels.length > 0 ? labels.join(' · ') : null
 }

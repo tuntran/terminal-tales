@@ -115,3 +115,25 @@ export function isPassingRun(output: string, isError: boolean): boolean {
   if (isError) return false
   return !FAILURE_MARKERS.some(marker => marker.test(output))
 }
+
+// Flags that make `git commit` print or check instead of committing.
+const NO_COMMIT = /\s(--dry-run|-h|--help)(\s|=|$)/
+
+/** True when one of the line's simple commands is a real `git commit`. */
+export function isGitCommit(command: string): boolean {
+  return simpleCommands(command).some(segment => /^git( -C \S+| -c \S+)* commit\b/.test(segment) && !NO_COMMIT.test(segment))
+}
+
+/**
+ * True when a Bash command ran and exited non-zero. A run the user
+ * interrupted, a call the user rejected and one a hook blocked are errors too,
+ * but none of them starts with the exit code, so none of them counts.
+ */
+export function isFailedRun(output: string, isError: boolean): boolean {
+  return isError && /^Exit code [1-9]\d*\b/.test(output) && !output.includes('[Request interrupted by user')
+}
+
+/** True when the user answered the permission dialog for a call with No or Esc. */
+export function isRejectedCall(output: string, isError: boolean): boolean {
+  return isError && output.startsWith("The user doesn't want to proceed with this tool use")
+}
