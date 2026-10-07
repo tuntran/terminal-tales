@@ -1,6 +1,6 @@
 import type { Effect, GameState, Hero, HeroClass, Monster } from '../../types'
 
-import { BOSSES, DOWN_SPRITE, EFFECTS, HERO_SPRITES, MONSTERS } from '../game/catalog'
+import { DOWN_SPRITE, EFFECTS, HERO_SPRITES } from '../game/catalog'
 
 export const CLASS_COLOR: Record<HeroClass, string> = {
   warrior: 'red',
@@ -27,9 +27,11 @@ export function heroSprite(hero: Hero, frame: number): readonly string[] {
   return hero.hp <= 0 ? DOWN_SPRITE : HERO_SPRITES[hero.cls][frame === 1 ? 1 : 0]
 }
 
+const MONSTER_SPRITE: readonly string[] = ['  __  ', ' (oo) ', ' /||\\ ', '  /\\  ']
+const BOSS_SPRITE: readonly string[] = [' )\\ /( ', ' (OwO) ', '<|###|>', ' /   \\ ']
+
 export function monsterSprite(monster: Monster): readonly string[] {
-  const kinds = monster.tier === 'boss' ? BOSSES : MONSTERS
-  return (kinds[monster.sprite] ?? MONSTERS[0]!).sprite
+  return monster.tier === 'boss' ? BOSS_SPRITE : MONSTER_SPRITE
 }
 
 /** A one-line summary for a band too narrow for the scene. */

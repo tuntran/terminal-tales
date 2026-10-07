@@ -1,4 +1,4 @@
-import type { EffectKind, GameAction, HeroClass, MonsterTier, Rarity, Slot } from '../../types'
+import type { EffectKind, GameAction, HeroClass, Monster, MonsterTier, Rarity, Slot } from '../../types'
 
 export type ClassInfo = {
   label: string
@@ -86,20 +86,35 @@ export const TIERS: Record<MonsterTier, TierInfo> = {
   boss: { label: 'Boss', hp: 8, atk: 2, reward: 12, dropChance: 1, luck: 2, color: 'red' },
 }
 
-export type MonsterKind = { name: string; sprite: readonly string[] }
+/** The sprite sheet a monster is drawn from: an id of the atlas built from assets/source. */
+export type MonsterAsset = 'skeleton' | 'goblin' | 'mushroom' | 'flying-eye' | 'evil-wizard' | 'evil-wizard-2' | 'evil-wizard-3'
 
+export type MonsterKind = { name: string; asset: MonsterAsset }
+
+// A save keeps a monster's index into these lists: append, never reorder.
 export const MONSTERS: readonly MonsterKind[] = [
-  { name: 'Slime Bug', sprite: ['      ', ' .--. ', '(o  o)', ' `--` '] },
-  { name: 'Goblin Lint', sprite: ['  ,,  ', ' (><) ', ' /||\\ ', '  /\\  '] },
-  { name: 'Dơi Null', sprite: ['      ', '/\\  /\\', '\\(oo)/', '  vv  '] },
-  { name: 'Xương Rò Rỉ', sprite: ['  __  ', ' (xx) ', ' -||- ', '  /\\  '] },
-  { name: 'Nấm Race', sprite: [' .--. ', '(o..o)', ' |  | ', ' "--" '] },
+  { name: 'Xương Rò Rỉ', asset: 'skeleton' },
+  { name: 'Goblin Lint', asset: 'goblin' },
+  { name: 'Nấm Race', asset: 'mushroom' },
+  { name: 'Mắt Bay Null', asset: 'flying-eye' },
 ]
 
 export const BOSSES: readonly MonsterKind[] = [
-  { name: 'Rồng Merge Conflict', sprite: ['  /\\_/\\', ' <(@@)>', '/|_vv_|', ' /    \\'] },
-  { name: 'Quỷ Deadlock', sprite: [' )\\ /( ', ' (OwO) ', '<|###|>', ' /   \\ '] },
+  { name: 'Pháp Sư Deadlock', asset: 'evil-wizard' },
+  { name: 'Pháp Sư Merge Conflict', asset: 'evil-wizard-2' },
+  { name: 'Pháp Sư Race Condition', asset: 'evil-wizard-3' },
 ]
+
+/**
+ * The kind a monster is drawn as. Its index wraps, so a save from an older,
+ * longer list still draws one of today's kinds.
+ */
+export function monsterKind(m: Pick<Monster, 'sprite' | 'tier'>): MonsterKind {
+  const kinds = m.tier === 'boss' ? BOSSES : MONSTERS
+  const n = kinds.length
+  const i = Number.isFinite(m.sprite) ? ((Math.trunc(m.sprite) % n) + n) % n : 0
+  return kinds[i]!
+}
 
 export const HERO_SPRITES: Record<HeroClass, readonly [readonly string[], readonly string[]]> = {
   warrior: [

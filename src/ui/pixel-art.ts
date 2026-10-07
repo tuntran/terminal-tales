@@ -1,5 +1,7 @@
 import type { HeroClass } from '../../types'
 
+import type { MonsterAsset } from '../game/catalog'
+
 // Pixel sprites. Each row is a string of palette keys, '.' transparent. Two
 // pixel rows share one terminal cell through the half block '▀': its
 // foreground paints the upper pixel and its background the lower one.
@@ -150,8 +152,7 @@ export const PIXEL_HERO_STRIDES: Record<HeroClass, readonly [Sprite, Sprite]> = 
   ],
 }
 
-/** Monsters in the order of the catalog's MONSTERS list. */
-export const PIXEL_MONSTERS: readonly Sprite[] = [
+const SPRITES_MONSTERS: readonly Sprite[] = [
   // Slime Bug
   [
     '....K..K....',
@@ -217,8 +218,7 @@ export const PIXEL_MONSTERS: readonly Sprite[] = [
   ],
 ]
 
-/** Bosses in the order of the catalog's BOSSES list. */
-export const PIXEL_BOSSES: readonly Sprite[] = [
+const SPRITES_BOSSES: readonly Sprite[] = [
   // Rồng Merge Conflict
   [
     '.K............K.',
@@ -250,6 +250,21 @@ export const PIXEL_BOSSES: readonly Sprite[] = [
     '..KKKK....KKKK..',
   ],
 ]
+
+const BY_ASSET: Record<MonsterAsset, Sprite> = {
+  skeleton: SPRITES_MONSTERS[3]!,
+  goblin: SPRITES_MONSTERS[1]!,
+  mushroom: SPRITES_MONSTERS[4]!,
+  'flying-eye': SPRITES_MONSTERS[2]!,
+  'evil-wizard': SPRITES_BOSSES[1]!,
+  'evil-wizard-2': SPRITES_BOSSES[0]!,
+  'evil-wizard-3': SPRITES_BOSSES[1]!,
+}
+
+/** The palette sprite a monster's sheet stands in for. */
+export function pixelMonster(asset: MonsterAsset): Sprite {
+  return BY_ASSET[asset]
+}
 
 /** A 3x5 pixel font for damage numbers: digits and 'k' for thousands. */
 export const DIGITS: Record<string, readonly string[]> = {

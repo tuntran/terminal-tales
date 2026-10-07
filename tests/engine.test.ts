@@ -23,8 +23,8 @@ import {
 } from '../src/game/engine'
 import { isFailedRun, isGitCommit, isPassingRun, isRejectedCall, isTestCommand } from '../src/game/test-command'
 import { bar } from '../src/ui/art'
-import { BOSSES, MONSTERS } from '../src/game/catalog'
-import { PALETTE, PIXEL_BOSSES, PIXEL_HEROES, PIXEL_HERO_ATTACKS, PIXEL_HERO_STRIDES, PIXEL_MONSTERS, decodeCells } from '../src/ui/pixel-art'
+import { BOSSES, MONSTERS, monsterKind } from '../src/game/catalog'
+import { PALETTE, PIXEL_HEROES, PIXEL_HERO_ATTACKS, PIXEL_HERO_STRIDES, decodeCells, pixelMonster } from '../src/ui/pixel-art'
 import { compose, newAnim, observe, pixelScene, tick } from '../src/ui/animation'
 
 function withItem(g: GameState, item: Partial<Item> = {}): GameState {
@@ -523,8 +523,7 @@ describe('pixel art', () => {
     ...Object.values(PIXEL_HEROES),
     ...Object.values(PIXEL_HERO_ATTACKS),
     ...Object.values(PIXEL_HERO_STRIDES).flat(),
-    ...PIXEL_MONSTERS,
-    ...PIXEL_BOSSES,
+    ...[...MONSTERS, ...BOSSES].map(kind => pixelMonster(kind.asset)),
   ]
 
   test('every sprite uses only palette colors', () => {
@@ -535,9 +534,16 @@ describe('pixel art', () => {
     }
   })
 
-  test('there is a sprite for every monster and boss', () => {
-    expect(PIXEL_MONSTERS).toHaveLength(MONSTERS.length)
-    expect(PIXEL_BOSSES).toHaveLength(BOSSES.length)
+  test('a save from the older, longer monster lists loads and draws', () => {
+    const g = newGame(3)
+    for (const [tier, sprite] of [['normal', 4], ['boss', 1], ['elite', 9], ['boss', -1]] as const) {
+      const old = { ...g, monster: { ...g.monster, name: 'Slime Bug', tier, sprite } }
+      const loaded = parseSave(JSON.parse(JSON.stringify(old)))
+      expect(loaded?.monster.sprite, `${tier} ${sprite}`).toBe(sprite)
+      const kinds = tier === 'boss' ? BOSSES : MONSTERS
+      expect(kinds).toContain(monsterKind(loaded!.monster))
+      expect(pixelScene(loaded!).cells.length).toBeGreaterThan(0)
+    }
   })
 
   test('every frame of a fight keeps one size, so frames can repaint in place', () => {

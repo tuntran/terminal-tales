@@ -54,15 +54,15 @@ var TIERS = {
   boss: { label: "Boss", hp: 8, atk: 2, reward: 12, dropChance: 1, luck: 2, color: "red" }
 };
 var MONSTERS = [
-  { name: "Slime Bug", sprite: ["      ", " .--. ", "(o  o)", " `--` "] },
-  { name: "Goblin Lint", sprite: ["  ,,  ", " (><) ", " /||\\ ", "  /\\  "] },
-  { name: "Dơi Null", sprite: ["      ", "/\\  /\\", "\\(oo)/", "  vv  "] },
-  { name: "Xương Rò Rỉ", sprite: ["  __  ", " (xx) ", " -||- ", "  /\\  "] },
-  { name: "Nấm Race", sprite: [" .--. ", "(o..o)", " |  | ", ' "--" '] }
+  { name: "Xương Rò Rỉ", asset: "skeleton" },
+  { name: "Goblin Lint", asset: "goblin" },
+  { name: "Nấm Race", asset: "mushroom" },
+  { name: "Mắt Bay Null", asset: "flying-eye" }
 ];
 var BOSSES = [
-  { name: "Rồng Merge Conflict", sprite: ["  /\\_/\\", " <(@@)>", "/|_vv_|", " /    \\"] },
-  { name: "Quỷ Deadlock", sprite: [" )\\ /( ", " (OwO) ", "<|###|>", " /   \\ "] }
+  { name: "Pháp Sư Deadlock", asset: "evil-wizard" },
+  { name: "Pháp Sư Merge Conflict", asset: "evil-wizard-2" },
+  { name: "Pháp Sư Race Condition", asset: "evil-wizard-3" }
 ];
 var KILLS_PER_STAGE = 10;
 var MAX_PARTY = 3;

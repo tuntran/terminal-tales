@@ -1,18 +1,18 @@
 import type { GameState, Monster, MonsterTier } from '../../types'
 
+import { monsterKind } from '../game/catalog'
 import { heroStats } from '../game/engine'
 import {
   type Canvas,
   DIGITS,
   PALETTE,
-  PIXEL_BOSSES,
   PIXEL_HEROES,
   PIXEL_HERO_ATTACKS,
   PIXEL_HERO_STRIDES,
-  PIXEL_MONSTERS,
   type PixelScene,
   type Sprite,
   encodeCells,
+  pixelMonster,
 } from './pixel-art'
 
 // The band's animation runs on its own clock, one frame every FRAME_MS, and
@@ -129,7 +129,7 @@ function spriteWidth(sprite: Sprite): number {
 }
 
 function monsterSprite(m: Monster): Sprite {
-  return m.tier === 'boss' ? (PIXEL_BOSSES[m.sprite] ?? PIXEL_BOSSES[0]!) : (PIXEL_MONSTERS[m.sprite] ?? PIXEL_MONSTERS[0]!)
+  return pixelMonster(monsterKind(m).asset)
 }
 
 function gray(color: number): number {
